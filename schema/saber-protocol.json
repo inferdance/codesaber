@@ -68,292 +68,120 @@
       ],
       "title": "AssistantDelta"
     },
-    "Event": {
-      "$defs": {
-        "AssistantDelta": {
-          "description": "Streaming deltas of an in-flight assistant response.",
-          "oneOf": [
-            {
-              "description": "Incremental text content.",
-              "properties": {
-                "kind": {
-                  "const": "text",
-                  "type": "string"
-                },
-                "text_delta": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "text_delta"
-              ],
-              "type": "object"
+    "Block": {
+      "description": "Content blocks. Internally tagged (`\"type\"`) for a stable wire format.",
+      "oneOf": [
+        {
+          "description": "Plain text content.",
+          "properties": {
+            "text": {
+              "type": "string"
             },
-            {
-              "description": "Incremental reasoning content.",
-              "properties": {
-                "kind": {
-                  "const": "thinking",
-                  "type": "string"
-                },
-                "thinking_delta": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "thinking_delta"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Incremental tool-call arguments; `name` arrives on the first delta\nfor the call (arguments accumulate as concatenated strings).",
-              "properties": {
-                "arguments_delta": {
-                  "type": "string"
-                },
-                "call_id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "tool_call",
-                  "type": "string"
-                },
-                "name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "kind",
-                "call_id",
-                "arguments_delta"
-              ],
-              "type": "object"
+            "type": {
+              "const": "text",
+              "type": "string"
             }
-          ]
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
         },
-        "EventMsg": {
-          "description": "Everything the engine broadcasts to subscribed frontends.",
-          "oneOf": [
-            {
-              "properties": {
-                "turn_id": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "turn_started",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "turn_id"
-              ],
-              "type": "object"
+        {
+          "description": "Model reasoning. `signature` carries provider redacted-thinking\npayloads where applicable (e.g. Anthropic).",
+          "properties": {
+            "signature": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
-            {
-              "properties": {
-                "step_id": {
-                  "type": "string"
-                },
-                "turn_id": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "step_started",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "turn_id",
-                "step_id"
-              ],
-              "type": "object"
+            "text": {
+              "type": "string"
             },
-            {
-              "properties": {
-                "delta": {
-                  "$ref": "#/$defs/AssistantDelta"
-                },
-                "step_id": {
-                  "type": "string"
-                },
-                "turn_id": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "assistant_delta",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "turn_id",
-                "step_id",
-                "delta"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "call_id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                },
-                "step_id": {
-                  "type": "string"
-                },
-                "turn_id": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "tool_started",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "turn_id",
-                "step_id",
-                "call_id",
-                "name"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "call_id": {
-                  "type": "string"
-                },
-                "output_delta": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "tool_output_delta",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "call_id",
-                "output_delta"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "call_id": {
-                  "type": "string"
-                },
-                "is_error": {
-                  "type": "boolean"
-                },
-                "type": {
-                  "const": "tool_completed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "call_id",
-                "is_error"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Context watermark; `context_window` is the effective window in tokens.",
-              "properties": {
-                "context_tokens": {
-                  "format": "uint64",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "context_window": {
-                  "format": "uint64",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": {
-                  "const": "token_count",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "context_tokens",
-                "context_window"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "message": {
-                  "type": "string"
-                },
-                "recoverable": {
-                  "type": "boolean"
-                },
-                "type": {
-                  "const": "error",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "message"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "reason": {
-                  "$ref": "#/$defs/TurnCompleteReason"
-                },
-                "turn_id": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "turn_complete",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "turn_id",
-                "reason"
-              ],
-              "type": "object"
+            "type": {
+              "const": "thinking",
+              "type": "string"
             }
-          ]
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
         },
-        "TurnCompleteReason": {
-          "description": "Why a turn ended.",
-          "oneOf": [
-            {
-              "const": "done",
-              "description": "Model produced a final answer with no pending tool calls.",
+        {
+          "description": "A model-initiated tool invocation.",
+          "properties": {
+            "arguments": true,
+            "id": {
               "type": "string"
             },
-            {
-              "const": "aborted_by_user",
-              "description": "User aborted (Esc / interrupt).",
+            "name": {
               "type": "string"
             },
-            {
-              "const": "max_steps_reached",
-              "description": "Step budget exhausted; the loop forced a wrap-up.",
+            "type": {
+              "const": "tool_call",
               "type": "string"
             }
-          ]
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "arguments"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The observed outcome of a tool call, routed back to the model.",
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            },
+            "is_error": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "call_id",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Inline image content (base64). No audio/video by design (YAGNI list).",
+          "properties": {
+            "data_base64": {
+              "type": "string"
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "type": {
+              "const": "image",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "media_type",
+            "data_base64"
+          ],
+          "type": "object"
         }
-      },
+      ]
+    },
+    "Event": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Wire envelope: one JSON-RPC notification payload per engine event.",
       "properties": {
@@ -379,94 +207,6 @@
       "type": "object"
     },
     "EventMsg": {
-      "$defs": {
-        "AssistantDelta": {
-          "description": "Streaming deltas of an in-flight assistant response.",
-          "oneOf": [
-            {
-              "description": "Incremental text content.",
-              "properties": {
-                "kind": {
-                  "const": "text",
-                  "type": "string"
-                },
-                "text_delta": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "text_delta"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Incremental reasoning content.",
-              "properties": {
-                "kind": {
-                  "const": "thinking",
-                  "type": "string"
-                },
-                "thinking_delta": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "thinking_delta"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Incremental tool-call arguments; `name` arrives on the first delta\nfor the call (arguments accumulate as concatenated strings).",
-              "properties": {
-                "arguments_delta": {
-                  "type": "string"
-                },
-                "call_id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "tool_call",
-                  "type": "string"
-                },
-                "name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "kind",
-                "call_id",
-                "arguments_delta"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "TurnCompleteReason": {
-          "description": "Why a turn ended.",
-          "oneOf": [
-            {
-              "const": "done",
-              "description": "Model produced a final answer with no pending tool calls.",
-              "type": "string"
-            },
-            {
-              "const": "aborted_by_user",
-              "description": "User aborted (Esc / interrupt).",
-              "type": "string"
-            },
-            {
-              "const": "max_steps_reached",
-              "description": "Step budget exhausted; the loop forced a wrap-up.",
-              "type": "string"
-            }
-          ]
-        }
-      },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Everything the engine broadcasts to subscribed frontends.",
       "oneOf": [
@@ -666,129 +406,6 @@
       "title": "EventMsg"
     },
     "Message": {
-      "$defs": {
-        "Block": {
-          "description": "Content blocks. Internally tagged (`\"type\"`) for a stable wire format.",
-          "oneOf": [
-            {
-              "description": "Plain text content.",
-              "properties": {
-                "text": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "text",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "text"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Model reasoning. `signature` carries provider redacted-thinking\npayloads where applicable (e.g. Anthropic).",
-              "properties": {
-                "signature": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "text": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "thinking",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "text"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "A model-initiated tool invocation.",
-              "properties": {
-                "arguments": true,
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "tool_call",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "id",
-                "name",
-                "arguments"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "The observed outcome of a tool call, routed back to the model.",
-              "properties": {
-                "call_id": {
-                  "type": "string"
-                },
-                "content": {
-                  "type": "string"
-                },
-                "is_error": {
-                  "type": "boolean"
-                },
-                "type": {
-                  "const": "tool_result",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "call_id",
-                "content"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Inline image content (base64). No audio/video by design (YAGNI list).",
-              "properties": {
-                "data_base64": {
-                  "type": "string"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "image",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "media_type",
-                "data_base64"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "Role": {
-          "description": "Conversation role. Tool results ride inside messages as blocks.",
-          "enum": [
-            "user",
-            "assistant"
-          ],
-          "type": "string"
-        }
-      },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "A single conversation turn contribution: a role plus ordered blocks.",
       "properties": {
@@ -820,492 +437,13 @@
       "type": "string"
     },
     "SessionEvent": {
-      "$defs": {
-        "Block": {
-          "description": "Content blocks. Internally tagged (`\"type\"`) for a stable wire format.",
-          "oneOf": [
-            {
-              "description": "Plain text content.",
-              "properties": {
-                "text": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "text",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "text"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Model reasoning. `signature` carries provider redacted-thinking\npayloads where applicable (e.g. Anthropic).",
-              "properties": {
-                "signature": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "text": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "thinking",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "text"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "A model-initiated tool invocation.",
-              "properties": {
-                "arguments": true,
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "tool_call",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "id",
-                "name",
-                "arguments"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "The observed outcome of a tool call, routed back to the model.",
-              "properties": {
-                "call_id": {
-                  "type": "string"
-                },
-                "content": {
-                  "type": "string"
-                },
-                "is_error": {
-                  "type": "boolean"
-                },
-                "type": {
-                  "const": "tool_result",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "call_id",
-                "content"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Inline image content (base64). No audio/video by design (YAGNI list).",
-              "properties": {
-                "data_base64": {
-                  "type": "string"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "image",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "media_type",
-                "data_base64"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "Message": {
-          "description": "A single conversation turn contribution: a role plus ordered blocks.",
-          "properties": {
-            "blocks": {
-              "items": {
-                "$ref": "#/$defs/Block"
-              },
-              "type": "array"
-            },
-            "role": {
-              "$ref": "#/$defs/Role"
-            }
-          },
-          "required": [
-            "role",
-            "blocks"
-          ],
-          "type": "object"
-        },
-        "Role": {
-          "description": "Conversation role. Tool results ride inside messages as blocks.",
-          "enum": [
-            "user",
-            "assistant"
-          ],
-          "type": "string"
-        },
-        "Usage": {
-          "description": "Token and cost accounting for one model response.",
-          "properties": {
-            "cache_read_tokens": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "cache_write_tokens": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "cost_usd": {
-              "description": "USD list-price cost of the response (static price table in engine\nconfig; f64 precision is sufficient for budget soft-warnings).",
-              "format": "double",
-              "type": "number"
-            },
-            "input_tokens": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "output_tokens": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "input_tokens",
-            "output_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-            "cost_usd"
-          ],
-          "type": "object"
-        }
-      },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Durable session events. Everything model-visible is reconstructible from\nthis log (the \"model-visible ⟺ logged\" invariant).",
       "oneOf": [
         {
           "description": "First line of every session file.",
           "properties": {
-            "cwd": {
-              "type": "string"
-            },
-            "engine_version": {
-              "type": "string"
-            },
-            "model": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "protocol_version": {
-              "type": "string"
-            },
-            "type": {
-              "const": "session_meta",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "protocol_version",
-            "engine_version",
-            "cwd"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "message": {
-              "$ref": "#/$defs/Message"
-            },
-            "type": {
-              "const": "user_message",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "message"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "message": {
-              "$ref": "#/$defs/Message"
-            },
-            "type": {
-              "const": "assistant_message",
-              "type": "string"
-            },
-            "usage": {
-              "$ref": "#/$defs/Usage"
-            }
-          },
-          "required": [
-            "type",
-            "message",
-            "usage"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "WAL intent — appended (with sync) *before* the tool side effect runs.",
-          "properties": {
-            "arguments": true,
-            "call_id": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "type": {
-              "const": "tool_call",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "call_id",
-            "name",
-            "arguments"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Outcome of a completed tool call.",
-          "properties": {
-            "call_id": {
-              "type": "string"
-            },
-            "content": {
-              "type": "string"
-            },
-            "is_error": {
-              "type": "boolean"
-            },
-            "type": {
-              "const": "tool_result",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "call_id",
-            "content"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "message": {
-              "type": "string"
-            },
-            "type": {
-              "const": "error",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "message"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Compaction checkpoint: `first_kept_seq` marks where the surviving\nhistory begins after summarization.",
-          "properties": {
-            "first_kept_seq": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "summary": {
-              "type": "string"
-            },
-            "type": {
-              "const": "compaction",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "summary",
-            "first_kept_seq"
-          ],
-          "type": "object"
-        }
-      ],
-      "title": "SessionEvent"
-    },
-    "SessionEventEnvelope": {
-      "$defs": {
-        "Block": {
-          "description": "Content blocks. Internally tagged (`\"type\"`) for a stable wire format.",
-          "oneOf": [
-            {
-              "description": "Plain text content.",
-              "properties": {
-                "text": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "text",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "text"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Model reasoning. `signature` carries provider redacted-thinking\npayloads where applicable (e.g. Anthropic).",
-              "properties": {
-                "signature": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "text": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "thinking",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "text"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "A model-initiated tool invocation.",
-              "properties": {
-                "arguments": true,
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "tool_call",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "id",
-                "name",
-                "arguments"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "The observed outcome of a tool call, routed back to the model.",
-              "properties": {
-                "call_id": {
-                  "type": "string"
-                },
-                "content": {
-                  "type": "string"
-                },
-                "is_error": {
-                  "type": "boolean"
-                },
-                "type": {
-                  "const": "tool_result",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "call_id",
-                "content"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Inline image content (base64). No audio/video by design (YAGNI list).",
-              "properties": {
-                "data_base64": {
-                  "type": "string"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "image",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "media_type",
-                "data_base64"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "Message": {
-          "description": "A single conversation turn contribution: a role plus ordered blocks.",
-          "properties": {
-            "blocks": {
-              "items": {
-                "$ref": "#/$defs/Block"
-              },
-              "type": "array"
-            },
-            "role": {
-              "$ref": "#/$defs/Role"
-            }
-          },
-          "required": [
-            "role",
-            "blocks"
-          ],
-          "type": "object"
-        },
-        "Role": {
-          "description": "Conversation role. Tool results ride inside messages as blocks.",
-          "enum": [
-            "user",
-            "assistant"
-          ],
-          "type": "string"
-        },
-        "SessionEvent": {
-          "description": "Durable session events. Everything model-visible is reconstructible from\nthis log (the \"model-visible ⟺ logged\" invariant).",
-          "oneOf": [
-            {
-              "description": "First line of every session file.",
+            "payload": {
               "properties": {
                 "cwd": {
                   "type": "string"
@@ -1321,58 +459,82 @@
                 },
                 "protocol_version": {
                   "type": "string"
-                },
-                "type": {
-                  "const": "session_meta",
-                  "type": "string"
                 }
               },
               "required": [
-                "type",
                 "protocol_version",
                 "engine_version",
                 "cwd"
               ],
               "type": "object"
             },
-            {
+            "type": {
+              "const": "session_meta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "payload": {
               "properties": {
                 "message": {
                   "$ref": "#/$defs/Message"
-                },
-                "type": {
-                  "const": "user_message",
-                  "type": "string"
                 }
               },
               "required": [
-                "type",
                 "message"
               ],
               "type": "object"
             },
-            {
+            "type": {
+              "const": "user_message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "payload": {
               "properties": {
                 "message": {
                   "$ref": "#/$defs/Message"
-                },
-                "type": {
-                  "const": "assistant_message",
-                  "type": "string"
                 },
                 "usage": {
                   "$ref": "#/$defs/Usage"
                 }
               },
               "required": [
-                "type",
                 "message",
                 "usage"
               ],
               "type": "object"
             },
-            {
-              "description": "WAL intent — appended (with sync) *before* the tool side effect runs.",
+            "type": {
+              "const": "assistant_message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "WAL intent — appended (with sync) *before* the tool side effect runs.",
+          "properties": {
+            "payload": {
               "properties": {
                 "arguments": true,
                 "call_id": {
@@ -1380,22 +542,30 @@
                 },
                 "name": {
                   "type": "string"
-                },
-                "type": {
-                  "const": "tool_call",
-                  "type": "string"
                 }
               },
               "required": [
-                "type",
                 "call_id",
                 "name",
                 "arguments"
               ],
               "type": "object"
             },
-            {
-              "description": "Outcome of a completed tool call.",
+            "type": {
+              "const": "tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Outcome of a completed tool call.",
+          "properties": {
+            "payload": {
               "properties": {
                 "call_id": {
                   "type": "string"
@@ -1405,37 +575,53 @@
                 },
                 "is_error": {
                   "type": "boolean"
-                },
-                "type": {
-                  "const": "tool_result",
-                  "type": "string"
                 }
               },
               "required": [
-                "type",
                 "call_id",
                 "content"
               ],
               "type": "object"
             },
-            {
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "payload": {
               "properties": {
                 "message": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "error",
                   "type": "string"
                 }
               },
               "required": [
-                "type",
                 "message"
               ],
               "type": "object"
             },
-            {
-              "description": "Compaction checkpoint: `first_kept_seq` marks where the surviving\nhistory begins after summarization.",
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Compaction checkpoint: `first_kept_seq` marks where the surviving\nhistory begins after summarization.",
+          "properties": {
+            "payload": {
               "properties": {
                 "first_kept_seq": {
                   "format": "uint64",
@@ -1444,66 +630,243 @@
                 },
                 "summary": {
                   "type": "string"
-                },
-                "type": {
-                  "const": "compaction",
-                  "type": "string"
                 }
               },
               "required": [
-                "type",
                 "summary",
                 "first_kept_seq"
               ],
               "type": "object"
-            }
-          ]
-        },
-        "Usage": {
-          "description": "Token and cost accounting for one model response.",
-          "properties": {
-            "cache_read_tokens": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
             },
-            "cache_write_tokens": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "cost_usd": {
-              "description": "USD list-price cost of the response (static price table in engine\nconfig; f64 precision is sufficient for budget soft-warnings).",
-              "format": "double",
-              "type": "number"
-            },
-            "input_tokens": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "output_tokens": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
+            "type": {
+              "const": "compaction",
+              "type": "string"
             }
           },
           "required": [
-            "input_tokens",
-            "output_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-            "cost_usd"
+            "type",
+            "payload"
           ],
           "type": "object"
         }
-      },
+      ],
+      "title": "SessionEvent"
+    },
+    "SessionEventEnvelope": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "One JSONL line.",
-      "properties": {
-        "event": {
-          "$ref": "#/$defs/SessionEvent"
+      "description": "One JSONL line: `{\"ts\":..,\"seq\":..,\"session_id\":..,\"type\":..,\"payload\":{..}}`.",
+      "oneOf": [
+        {
+          "description": "First line of every session file.",
+          "properties": {
+            "payload": {
+              "properties": {
+                "cwd": {
+                  "type": "string"
+                },
+                "engine_version": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "protocol_version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "protocol_version",
+                "engine_version",
+                "cwd"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "session_meta",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
         },
+        {
+          "properties": {
+            "payload": {
+              "properties": {
+                "message": {
+                  "$ref": "#/$defs/Message"
+                }
+              },
+              "required": [
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "user_message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "payload": {
+              "properties": {
+                "message": {
+                  "$ref": "#/$defs/Message"
+                },
+                "usage": {
+                  "$ref": "#/$defs/Usage"
+                }
+              },
+              "required": [
+                "message",
+                "usage"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "assistant_message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "WAL intent — appended (with sync) *before* the tool side effect runs.",
+          "properties": {
+            "payload": {
+              "properties": {
+                "arguments": true,
+                "call_id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "call_id",
+                "name",
+                "arguments"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Outcome of a completed tool call.",
+          "properties": {
+            "payload": {
+              "properties": {
+                "call_id": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "is_error": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "call_id",
+                "content"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "payload": {
+              "properties": {
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "message"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Compaction checkpoint: `first_kept_seq` marks where the surviving\nhistory begins after summarization.",
+          "properties": {
+            "payload": {
+              "properties": {
+                "first_kept_seq": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "summary",
+                "first_kept_seq"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "const": "compaction",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
         "seq": {
           "description": "Monotonic sequence within the session; matches event-log order.",
           "format": "uint64",
@@ -1513,21 +876,40 @@
         "session_id": {
           "type": "string"
         },
-        "ts_ms": {
-          "description": "Wall-clock milliseconds since the Unix epoch.",
+        "ts": {
+          "description": "Wall-clock milliseconds since the Unix epoch (contract field: `ts`).",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "ts_ms",
+        "ts",
         "seq",
-        "session_id",
-        "event"
+        "session_id"
       ],
       "title": "SessionEventEnvelope",
       "type": "object"
+    },
+    "TurnCompleteReason": {
+      "description": "Why a turn ended.",
+      "oneOf": [
+        {
+          "const": "done",
+          "description": "Model produced a final answer with no pending tool calls.",
+          "type": "string"
+        },
+        {
+          "const": "aborted_by_user",
+          "description": "User aborted (Esc / interrupt).",
+          "type": "string"
+        },
+        {
+          "const": "max_steps_reached",
+          "description": "Step budget exhausted; the loop forced a wrap-up.",
+          "type": "string"
+        }
+      ]
     },
     "Usage": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

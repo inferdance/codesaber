@@ -8,7 +8,7 @@
 1. `saber exec -p "任务"` 在真实仓库完成"读 → 改 → 跑测试"闭环,输出 JSONL 事件流;
 2. Harbor adapter 就绪,terminal-bench 子集 10 题跑出基线分(数字记录进 `docs/eval/baseline-m0.md`);
 3. 质量门禁全绿:workspace lints(deny unwrap/expect)+ `clippy -D warnings` + `cargo-deny`(单门禁:advisories/bans/licenses/sources;cargo-audit 维护者已退出,不采用)+ cargo-shear + insta 快照 + 依赖锁定;
-4. 协议 JSON Schema artifact 构建期生成(`saber-protocol/schema/`),CI 校验与 Rust 类型同步;
+4. 协议 JSON Schema artifact 由 `cargo run -p saber-protocol --bin saber-export-schema` 显式生成并入库于 `schema/saber-protocol.json`(不走 build.rs——向源码树写产物是反模式);CI(PR+nightly)经 `committed_schema_artifact_is_current` 与本地引用闭包测试强制与 Rust 类型零漂移;
 5. mock provider 驱动的 loop 集成测试覆盖:正常 turn / length 拒执行 / doom-loop / 工具失败回错;
 6. 边界测试:bash 写 cwd 之外被拒、网络被拒、`.ssh`/`.env` 读被拒、子进程 `env` 中无 `SABER_*`/密钥变量(环境白名单生效)、write/edit 越界路径被引擎拒绝。
 
@@ -29,7 +29,7 @@
 - 内部消息模型(spec §3.4/R1-Q4 全深度):`Message{role, blocks}`,`Block = Text | Thinking | ToolCall | ToolResult | Image`;`Usage{input,output,cache_read,cache_write,cost}`;
 - `EventMsg` v0:`TurnStarted/TurnComplete/StepStarted/AssistantDelta(Text|Thinking|ToolCallDelta)/ToolStarted/ToolOutputDelta/ToolCompleted/TokenCount/Error`;
 - 会话 JSONL 事件 schema(`{ts, seq, session_id, type, payload}`,type 覆盖 session_meta/user_message/assistant_message/**tool_call(WAL intent,副作用前同步落盘)**/tool_result/error/compaction);
-- schemars 导出 + `schema/` artifact 写盘任务(build.rs 或 xtask)。
+- schemars 导出:bin 写盘 + 嵌套 `$defs` 提升到 artifact 根(所有本地 `$ref` 可解析)+ insta 快照与引用闭包测试。
 - 验收:insta 快照锁定 schema;schema-sync CI 通过。
 
 ### T3 saber-provider(2d)
