@@ -48,7 +48,7 @@ codesaber/
 ### 2.2 进程模型与通信
 
 - 单一二进制 `saber`,多模式:`saber`(TUI)/ `saber server`(常驻,launchd 管理)/ `saber exec -p`(headless)/ `saber resume`;**App bundle 内嵌版本锁定的 sidecar 引擎二进制**,也支持 attach 已运行的系统实例。
-- 通信:Unix domain socket(默认 `~/.codesaber/daemon.sock`,可配置)+ JSON-RPC 2.0(请求/响应)+ SSE(流式事件);协议带版本握手。
+- 通信:Unix domain socket(默认 `~/.codesaber/daemon.sock`,可配置)上的**单连接双向 JSON-RPC 2.0**——前端与引擎互为 caller(审批/追问走引擎→前端反向调用,zcode reverse-rpc 同款);事件以 JSON-RPC notification 推送,前端 `subscribe(session_id)` 订阅、通知带 session 路由;协议独立 semver,握手带版本+能力协商。App v1 严格只用内嵌 sidecar(版本强锁定),attach 外部实例 = M3+。
 - **任何前端看到同一份会话事实**:App 发起的会话 CLI 能 resume,终端跑一半的任务 App 能接手。
 - 数据目录 `~/.codesaber/`:sessions(JSONL 事件溯源)、config.toml、truncations/;凭据存 macOS Keychain(明文不落盘)。
 - 分发:CLI 走 brew(预编译二进制)/cargo;App 走 Developer ID 签名 + 公证 + Sparkle 自动更新。
@@ -96,6 +96,8 @@ codesaber/
 ### 3.6 模型路由(saber-provider)
 
 - MVP 三家:OpenAI 兼容(覆盖 DeepSeek/Kimi/GLM/OpenRouter/网关)+ Anthropic Messages + Ollama;统一 usage+成本记账;会话内可切模型。
+- **failover v1**:同一请求失败(限流/超时/5xx)自动切换到可配置的备用 provider/model;RequestRouter seam 现在留。
+- 成本核算:provider usage 权威 + chars/4 估算 + 静态价格表(config);会话/日预算软告警。
 - v2:智能路由(便宜模型探路、贵模型决策)、models.dev 目录、订阅 OAuth。
 
 ### 3.7 draw / strike / sheathe 工作流(产品差异化)
@@ -130,7 +132,7 @@ codesaber/
 ```
 用户输入(App/TUI)→ RPC submit_prompt → 引擎 steering 队列
 → loop 组装上下文(系统提示词+历史+世界状态)→ provider 流式响应
-→ EventMsg 增量(reasoning/text/tool_delta)→ SSE 广播全部前端
+→ EventMsg 增量(reasoning/text/tool_delta)→ JSON-RPC notification 广播全部订阅前端
 → 工具执行(权限网关→沙箱→截断)→ tool_result 追加事件日志
 → 循环直到 turn 完成 → TokenCount/成本事件 → 会话 JSONL 落盘
 ```
@@ -151,14 +153,16 @@ codesaber/
 
 ### 5.2 里程碑
 
-- **M0 引擎骨架**:workspace + protocol + provider 两家(OpenAI 兼容 + Anthropic)+ loop + 6 工具 + JSONL 会话;`saber exec` 完成"读→改→跑测试"。验收:Harbor 10 题基线分。
-- **M1 可用 CLI**:TUI + steering + 权限三档 + compaction 两层 + resume + headless + 第三家 provider(Ollama)。验收:日常自用一天不打断;夜间回归无退化。
-- **M2 Mac App**:saber-server 常驻 + Swift 协议生成 + App 四区 + worktree 并行会话 + 通知。验收:App 与 CLI 互通同一会话;签名公证发布。
-- **M3 差异化纵深**:draw/strike/sheathe 模式化 + jobs + MCP + Skills(SKILL.md 三级渐进披露)+ 成本看板。
+- **M0 引擎骨架**:workspace + protocol + provider 两家(OpenAI 兼容 + Anthropic)+ loop + 6 工具 + JSONL 会话;`saber exec` 完成"读→改→跑测试";质量门禁全套上线(lints/cargo-deny/insta)。验收:Harbor 10 题基线分。
+- **M1 可用 CLI**:TUI + steering + 权限三档 + compaction 两层 + resume + headless + 第三家 provider(Ollama)+ **failover** + **`saber replay` 回放器** + OTel trace。验收:日常自用一天不打断;夜间回归无退化。
+- **M2 Mac App**:saber-server 常驻 + Swift 协议生成 + App 四区 + worktree 并行会话 + 通知 + **协议 v1 冻结(兼容性进 CI)** + `read_image`/App 粘贴图片。验收:App 与 CLI 互通同一会话;签名公证发布;**Terminal-Bench 2.0 ≥40%**。
+- **M3 差异化纵深**:draw/strike/sheathe 模式化 + jobs + MCP(延迟加载默认)+ Skills(SKILL.md 双通道)+ 成本看板 + egress proxy + App inspector tab + hooks(exec 式六事件)。验收:**Terminal-Bench 2.0 ≥55%**;App 内完成一次并行双会话真实任务。
 
 ### 5.3 明确不做(YAGNI)
 
-内嵌 JS 插件运行时;Windows/Linux 沙箱(跨平台只留抽象缝隙);订阅 OAuth(MVP);云同步/团队协作;自训模型。v2 再评估:Starlark 策略、模型智能路由、WASM 插件、多机 attach。
+内嵌 JS 插件运行时;Windows/Linux 沙箱(跨平台只留抽象缝隙);订阅 OAuth(MVP);云同步/团队协作;自训模型;**audio/video 多模态**。v2 再评估:Starlark 完整策略引擎、模型智能路由、WASM 插件 ABI、多机 attach、auto-memory(opt-in)。
+
+License:**Apache-2.0**(带专利授权,README 的 TBD 就此落定)。App 最低系统版本:**macOS 14+**(SwiftUI Observation 基线)。
 
 ## 6. 参考实现映射(抄哪儿)
 
@@ -172,3 +176,52 @@ codesaber/
 | 子代理/profile(未来) | kimi-code | `agent-core-v2/src/session/agentLifecycle/` |
 | TUI scrollback 手法 | codex | `codex-rs/tui/src/insert_history.rs` |
 | 评测 | Harbor | harbor-framework/harbor |
+
+## 7. 架构天花板决策(grilling 三轮,2026-08-19,23 项全部确认)
+
+### 7.1 决策记录表
+
+**Round 1 — 架构天花板**
+
+| # | 决策 |
+|---|---|
+| 1 | 扩展策略:能力注册统一走 Registry 抽象留缝隙;v1 扩展面只开 hooks+MCP+Skills;WASM ABI 后推 |
+| 2 | Session 一等公民 + **Workspace trait**(LocalWorktree / InRepo / 未来 Remote·Docker);并行会话默认 worktree 隔离,串行可直接在 repo 内 |
+| 3 | 子代理抽象现在冻结:Agent Profile 注册表 + 可嵌套子 session(Task 工具 M3 再发) |
+| 4 | 内部消息模型 day 1 全深度:thinking/reasoning 块、reasoning effort、prompt cache 断点、图片内容块 |
+| 5 | 存储:JSONL 唯一事实源 + SQLite 只读索引;不变量 "index is derivable" |
+| 6 | OTel trace day 1(span:turn/step/tool/provider);`saber replay` M1 |
+| 7 | 量化验收:Terminal-Bench 2.0 M2 ≥40%、M3 ≥55% |
+| 8 | 网络:M1 沙箱内默认禁网+审批放行;M3 egress proxy(带白名单,兼作 MCP OAuth token 防护基础) |
+
+**Round 2 — 协议与编排**
+
+| # | 决策 |
+|---|---|
+| 9 | hooks = exec 式(对齐 Claude Code:JSON stdin,退出码 0=放行/2=阻断且 stderr 回给模型)+ 进程内事件总线(引擎自身功能载体);v1 六事件:PreToolUse/PostToolUse/UserPromptSubmit/Stop/PreCompact/SessionStart;**PreToolUse deny 优先级高于一切模式(含 full-access)** |
+| 10 | 协议:单 UDS 连接**双向** JSON-RPC,`subscribe(session_id)` 订阅、通知带 session 路由;App v1 严格用内嵌 sidecar(版本强锁定),attach 外部实例 M3+ |
+| 11 | worktree 生命周期:SessionManager 全权;自动建(`saber/<slug>-<id>` 分支);**绝不自动删除有未合并提交/脏文件的 worktree**;归档时引导 merge & clean |
+| 12 | 子代理规则:权限只收不放(子 ⊆ 父)、最大深度 2、仅 full 模式可 spawn、后台子代理持久化可 resume |
+| 13 | MCP:命名空间 `mcp__server__tool` + description 截断(2048)+ **延迟加载默认**(tool_search 按需拉,codex ToolExposure::Deferred);stdio+HTTP;OAuth/elicitation 后置 |
+| 14 | 模型路由:failover v1(同请求失败自动换备用);智能路由 v2;成本 = usage 权威 + chars/4 估算 + 静态价格表 + 会话/日预算软告警 |
+| 15 | 记忆:AGENTS.md 层级只读注入(沿祖先链,兼容读 CLAUDE.md);auto-memory = v2 且默认 opt-in |
+| 16 | 质量门禁 M0 起:workspace lints(deny unwrap/expect + clippy -D warnings)+ cargo-deny + cargo-audit + insta 快照 + 依赖锁定 |
+
+**Round 3 — 收尾细节**
+
+| # | 决策 |
+|---|---|
+| 17 | 多模态:M2 给 `read_image` 工具 + App 粘贴图片;不做 audio/video |
+| 18 | Skills 双通道(pi 式):系统提示词只常驻清单(name+description),正文由模型 read 自取;`/skill-name` 手动展开 |
+| 19 | 调试:M1 `saber replay`(快进/过滤/事件树,事件日志直接投影);M3 App inspector tab |
+| 20 | 版本:协议独立 semver,v1 于 M2 冻结、兼容性进 CI;引擎/CLI/App 同 repo 同 tag;0.x 每周 tag,M3 后按需 |
+| 21 | License:Apache-2.0 |
+| 22 | plan 载体:`.codesaber/plans/<session>-<slug>.md` 结构化 markdown(frontmatter status:drawn/striking/shipped);draw 产出、strike 消费、sheathe 归档,跨会话可复用、可 git 提交 |
+| 23 | App 最低系统版本 macOS 14+(SwiftUI Observation 基线) |
+
+### 7.2 增补设计细节
+
+- **Workspace trait**(saber-core):`fn resolve(path) / fn apply_patch(...) / fn exec(...)` 之类的文件系统与执行视图接口;LocalWorktree/InRepo 是 v1 实现,Remote/Docker 留缝。沙箱与未来远程执行共用这条缝,工具 schema 不感知实现。
+- **Agent Profile**:注册表(profile = 工具白名单 + 提示词 overlay + 权限继承声明 + summaryPolicy);v1 内置 `agent`(全量)/`explore`(只读)/`coder`(M3 子代理用);子 session 复用引擎全部服务,消息上下文从零开始(kimi 手法)。
+- **审批协议**(双向 JSON-RPC 的第一个反向调用):`approval/request` → 前端展示命令/diff/触发规则 → `approval/response {once|always|reject}`;always 按 AST 前缀+路径集记忆;reject 级联同会话 pending(opencode 手法)。
+- **failover 配置**:`[model_failover] primary = "anthropic/claude-..." fallback = ["openai-compat/deepseek-...", "ollama/qwen3-coder"]`,限流/超时/5xx 触发,同 turn 内最多切换 2 次。
