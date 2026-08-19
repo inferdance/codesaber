@@ -20,15 +20,10 @@ license = "Apache-2.0"
 repository = "https://github.com/inferdance/codesaber"
 
 [workspace.dependencies]
+# Workspace-level dependency table grows with each M0 task (deps are added
+# when code actually uses them — cargo-shear enforces this in CI).
 saber-protocol = { path = "crates/saber-protocol", version = "0.1.0" }
 saber-core = { path = "crates/saber-core", version = "0.1.0" }
-saber-tools = { path = "crates/saber-tools", version = "0.1.0" }
-saber-provider = { path = "crates/saber-provider", version = "0.1.0" }
-saber-sandbox = { path = "crates/saber-sandbox", version = "0.1.0" }
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
 anyhow = "1"
 
 [workspace.lints.rust]
