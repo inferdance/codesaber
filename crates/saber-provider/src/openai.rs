@@ -263,12 +263,9 @@ impl Provider for OpenAiCompatProvider {
                         if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
                             usage = map_usage(u);
                         }
-                        let Some(choice) = v
-                            .pointer("/choices/0")
-                            .filter(|c| !c.is_null())
-                            .map(|c| c.clone())
-                        else {
-                            continue;
+                        let choice = match v.pointer("/choices/0") {
+                            Some(choice) if !choice.is_null() => choice.clone(),
+                            _ => continue,
                         };
                         if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
                             finish_reason = Some(reason.to_owned());
