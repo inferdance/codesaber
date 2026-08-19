@@ -7,7 +7,7 @@
 
 1. `saber exec -p "任务"` 在真实仓库完成"读 → 改 → 跑测试"闭环,输出 JSONL 事件流;
 2. Harbor adapter 就绪,terminal-bench 子集 10 题跑出基线分(数字记录进 `docs/eval/baseline-m0.md`);
-3. 质量门禁全绿:workspace lints(deny unwrap/expect)+ `clippy -D warnings` + `cargo-deny` + `cargo-audit` + insta 快照 + 依赖锁定;
+3. 质量门禁全绿:workspace lints(deny unwrap/expect)+ `clippy -D warnings` + `cargo-deny`(单门禁:advisories/bans/licenses/sources;cargo-audit 维护者已退出,不采用)+ insta 快照 + 依赖锁定;
 4. 协议 JSON Schema artifact 构建期生成(`saber-protocol/schema/`),CI 校验与 Rust 类型同步;
 5. mock provider 驱动的 loop 集成测试覆盖:正常 turn / length 拒执行 / doom-loop / 工具失败回错;
 6. 沙箱边界测试:bash 写 cwd 之外被拒、网络被拒、子进程 `env` 中无 `SABER_*`/密钥变量(环境白名单生效)。
@@ -21,8 +21,8 @@
 
 ### T1 Workspace 脚手架(0.5d)
 - cargo workspace:9 crates 骨架(protocol/core/tools/provider/sandbox/jobs/mcp/server/cli;M0 激活 protocol/core/tools/provider/sandbox/cli,其余空壳占位防后续大挪移);
-- `[workspace.lints]`:deny unwrap/expect/clippy::all -D;rustfmt.toml;deny.toml(license=Apache-2.0 兼容、advisory);Cargo.lock 提交;
-- GitHub Actions:fmt + clippy + test + deny + audit + schema-sync( PR 与 nightly)。
+- `[workspace.lints]`:deny unwrap/expect/clippy::all -D;rustfmt.toml;deny.toml(license=Apache-2.0 兼容、advisory);Cargo.lock 提交;测试跑 cargo-nextest;
+- GitHub Actions:fmt + clippy + nextest + cargo-deny + schema-sync(PR 与 nightly)。
 - 验收:CI 全绿样板。
 
 ### T2 saber-protocol v0(1d)
@@ -34,6 +34,7 @@
 
 ### T3 saber-provider(2d)
 - `Provider` trait:`stream(request) -> Stream<ProviderEvent>`(错误编码进流,禁止 panic——pi 契约);
+- HTTP 用 reqwest 0.13(默认 rustls);**SSE 解析自研**(~100 行:LLM SSE 只是 `data:` 行 + `[DONE]`;reqwest-eventsource 已停维护,不用);
 - OpenAI 兼容 adapter(/chat/completions + SSE 解析 + tool call 增量拼装)+ Anthropic Messages adapter(含 thinking 块、cache_control 断点);
 - 重试:限流/超时指数退避(基础版,failover 完整版 M1);
 - usage/成本记账(静态价格表进 config);chars/4 估算 fallback;
@@ -47,15 +48,17 @@
   - `read`:cat -n 行号、2000 行/单行 2000 字符、二进制探测;
   - `write`:存在文件须先 read(会话状态校验);
   - `edit`:old/new 唯一替换 + 容错链前六级 + disproportionate 防护 + 每文件互斥 + CRLF/BOM 保留;
-  - `grep`/`glob`:grep crate 系(ripgrep 内核);
+  - `grep`/`glob`:`grep-searcher`/`grep-regex`(ripgrep 内核)+ `ignore`/`globset`/`walkdir`(globwalk 已进维护模式,不采用);
 - 提示词侧工具描述遵循 Claude Code 手法(细则进 description 不进系统提示词)。
 - 验收:edit 容错链测试矩阵(≥20 case);并行/互斥调度测试。
 
 ### T4b saber-sandbox 最小 Seatbelt(1d)
-- `sandbox-exec` 策略模板(M0 档 `workspace-write-lite`):可写 = cwd + `~/.codesaber/`(含 truncations),其余只读;网络出连接默认拒绝;
+- `sandbox-exec` 策略模板(M0 档 `workspace-write-lite`,参照 codex `sandboxing/src/*.sbpl`):`(deny default)` 起步,放行 process-exec/fork、sysctl-read(含 `hw.optional.arm.*`)、PTY、cfprefs;可写 = canonicalize 后的 cwd + `~/.codesaber/`(⚠️ `/var`→`/private/var` 归一化;排除子路径用 `require-not (literal)` + `(subpath)` 双条);其余只读;
+- **读侧防护**:显式 `(deny file-read* (subpath "~/.ssh"))` + workspace 内 `**/.env` glob deny(TCC 不救场,子进程继承终端 Full Disk Access);
+- **M0 全禁网**(策略不写任何 network allow 即默认拒绝):LLM API 调用在沙箱外引擎主进程,子进程无需网络;M1+ 需要装依赖时再评估 codex 式本地代理;
 - 子进程环境白名单(只传 PATH/HOME/LANG/TMPDIR),引擎密钥不进子进程;
 - M1 的权限网关/审批升级在此之上接入(本任务只做强制边界,不做审批)。
-- 验收:DoD#6 沙箱边界测试三件套(cwd 外写被拒 / 网络被拒 / env 无密钥)。
+- 验收:DoD#6 沙箱边界测试三件套(cwd 外写被拒 / 网络被拒 / env 无密钥)+ `.ssh`/`.env` 读被拒。
 
 ### T5 saber-core loop + session(2.5d)
 - `SessionManager`:JSONL 追加写,**WAL 语义**——工具副作用执行前同步落 `tool_call` intent(fsync)、执行后落 result,其余事件(assistant delta 等)批量 flush;启动重建投影;恢复时显式识别"有 intent 无 result"的未完成调用;会话目录 `~/.codesaber/sessions/<ts>-<id>/`;

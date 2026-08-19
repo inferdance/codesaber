@@ -121,7 +121,7 @@ codesaber/
 
 - 信息架构四区:**会话列表侧栏**(每会话=独立 git worktree,显示状态/成本/耗时)· **会话主视图**(消息流+工具调用可折叠+流式 diff)· **审批中心**(权限请求集中处理)· **任务中心**(jobs 监控);菜单栏常驻 + 全局快捷键唤起。
 - 架构:SwiftUI + Observation(MV 模式);网络层为构建期生成的 Codable 客户端(UDS JSON-RPC + SSE);**App 不做业务决策,全部状态来自引擎事件流**(opencode"前端只是事件流的视图"原则)——保证 CLI/App 行为永远一致。
-- 原生独占能力:Keychain、UserNotifications、菜单栏、剪贴板、FSEvents 文件监听、后续 Services/Shortcuts。
+- 原生独占能力:Keychain(Security framework)、UserNotifications、菜单栏、剪贴板、FSEvents 文件监听(由引擎 notify 推事件,客户端只渲染)、后续 Services/Shortcuts。⚠️ Markdown 渲染注意:MarkdownUI 已进维护模式且有长文性能 issue,M2 前须做流式压测,备选段落级缓存 + AttributedString 自绘。
 
 ### 4.3 headless
 
@@ -225,3 +225,21 @@ License:**Apache-2.0**——LICENSE 文件与 README 同步落地于 M0-T8(设�
 - **Agent Profile**:注册表(profile = 工具白名单 + 提示词 overlay + 权限继承声明 + summaryPolicy);v1 内置 `agent`(全量)/`explore`(只读)/`coder`(M3 子代理用);子 session 复用引擎全部服务,消息上下文从零开始(kimi 手法)。
 - **审批协议**(双向 JSON-RPC 的第一个反向调用):`approval/request` → 前端展示命令/diff/触发规则 → `approval/response {once|always|reject}`;always 按 AST 前缀+路径集记忆;reject 级联同会话 pending(opencode 手法)。
 - **failover 配置**:`[model_failover] primary = "anthropic/claude-..." fallback = ["openai-compat/deepseek-...", "ollama/qwen3-coder"]`,限流/超时/5xx 触发,同 turn 内最多切换 2 次。
+
+## 8. 技术栈选型速查(2026-08 联网核实,详见 docs/research/08)
+
+| 领域 | 选型 | 关键核实结论 |
+|---|---|---|
+| RPC | **自研 line-delimited JSON-RPC**(tokio LinesCodec + serde,可加 SO_PEERCRED) | jsonrpsee 已移除 IPC 支持;codex app-server 同路线 |
+| HTTP/SSE | reqwest 0.13(rustls 默认)+ **自研 ~100 行 SSE 解析器** | reqwest-eventsource 停维护;LLM SSE 只是 data 行 + [DONE] |
+| 类型生成 | schemars 1.0(单一事实源)→ quicktype 生成 Swift Codable | schema 入库 + CI 生成 + diff 审查;不需要 FFI/ts-rs |
+| TUI | ratatui 0.30 + crossterm 0.29 | 流式 scrollback 用 scrolling-regions feature + `insert_before` |
+| 错误 | crate 层 thiserror 2.x + serde(错误进事件流);bin 层 anyhow | — |
+| CLI/配置 | clap 4.6 + figment(toml/env/CLI)+ directories + keyring 4.x | keyring 4.x 拆 core + apple-native-keyring-store |
+| 质量门禁 | cargo-deny 单门禁(advisories/bans/licenses/sources)+ cargo-shear + nextest + insta | cargo-audit 维护者已退出 |
+| 搜索/遍历 | `ignore`+`walkdir`+`globset`(gitignore 语义);`grep-searcher`/`grep-regex` | globwalk 已进维护模式 |
+| 分发 | dist(原 cargo-dist)→ GH Releases + homebrew-tap + cargo-binstall | dist 存活(已合并 Astral fork) |
+| App 架构 | SwiftUI @Observable + 轻 MV;@Entry 注入;Swift Charts 成本看板 | 属性级追踪对流式渲染最优 |
+| App↔引擎 | NWConnection(UDS)+ ChimeHQ/JSONRPC;MCP swift-sdk 作参考 | Apple 无一等 SSE API(再次支持 JSON-RPC notification 决策) |
+| App 更新/分发 | Sparkle 2.9.x(EdDSA + delta)+ Developer ID + notarytool 直发 | App Store 沙盒与子进程/UDS 冲突,直发是共识 |
+| 沙箱 | Seatbelt(.sbpl 抄 codex 模板):deny default 起步、可写根 canonicalize、require-not+subpath 双条排除、deny-read .ssh/.env、M0 全禁网 | deprecated 标记十年未变,主流 agent 全在用;LLM 调用在沙箱外主进程,子进程无需网络 |
