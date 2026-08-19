@@ -100,15 +100,24 @@ codesaber/
 - 成本核算:provider usage 权威 + chars/4 估算 + 静态价格表(config);会话/日预算软告警。
 - v2:智能路由(便宜模型探路、贵模型决策)、models.dev 目录、订阅 OAuth。
 
-### 3.7 draw / strike / sheathe 工作流(产品差异化)
+### 3.7 分层哲学与工作流包(2026-08-19 修订)
 
-三个一等模式,不只是命名:
+**基座零产品意见(pi 精华),工作流是可卸载的上层内容**:
 
-- **draw**:只读探索(工具白名单只读)+ 产出 plan 文件;
-- **strike**:按 plan 执行(默认 workspace-write);
-- **sheathe**:收尾——整理 diff、生成 commit message、跑全量测试。
+```
+┌─ 用户层:AGENTS.md / 用户 skills / hooks / MCP
+├─ 默认工作流包(可换可删):draw/strike/sheathe
+│    = plan-mode 机制 + 一组 skills(/draw /strike /sheathe 命令)
+│    + explore/coder profile overlay + plan 文件约定
+├─ 基座机制层(零意见):loop / 工具 / 沙箱 / 会话 / Profile 注册表 /
+│    plan-mode 机制(只读白名单+plan文件+exit 审批)/ Skills 加载器
+└─ pi 式纪律:极简提示词 · 细则进工具描述 · 按需拉取不预推 ·
+     机械强制不进提示词 · 能力注册全走同一 Registry
+```
 
-模式切换经 `exit_plan_mode` 式审批;工具目录跨模式不变以保请求缓存稳定。
+- **引擎只提供工作流的机制,不内置工作流的内容**。draw/strike/sheathe 是官方默认工作流包(skill 实现的命令 + profile + plan 文件约定),用户可整体替换为自己的流程(TDD 式、瀑布式…);提示词里的"工作流宪法"一节随包加载、可卸载,基座提示词保持 pi 式极简。
+- plan-mode 机制(基座):只读工具白名单、`.codesaber/plans/<session>-<slug>.md`(frontmatter status:drawn/striking/shipped)、`exit_plan_mode` 式审批、工具目录跨模式不变以保请求缓存稳定。
+- **卸载即证明**:工作流包必须能被禁用后基座仍完整可用——这是"产品主张不污染基座"的验收标准(与 TB2.0 跑分互证:带包 vs 裸基座各测一轮)。
 
 ## 4. 前端与数据流
 
@@ -156,7 +165,7 @@ codesaber/
 - **M0 引擎骨架**:workspace + protocol + provider 两家(OpenAI 兼容 + Anthropic)+ loop + 6 工具 + JSONL 会话(WAL 语义)+ **最小 Seatbelt 沙箱(写边界+禁网+子进程环境白名单)**;`saber exec` 完成"读→改→跑测试";质量门禁全套上线(lints/cargo-deny/insta)。验收:Harbor 10 题基线分。
 - **M1 可用 CLI**:TUI + steering + 权限三档 + compaction 两层 + resume + headless(`--output-schema <path>` 结构化输出)+ 第三家 provider(Ollama)+ **failover** + **`saber replay` 回放器** + OTel trace。验收:日常自用一天不打断;夜间回归无退化。
 - **M2 Mac App**:saber-server 常驻 + Swift 协议生成 + App 四区 + worktree 并行会话 + 通知 + **协议 v1 冻结(兼容性进 CI)** + `read_image`/App 粘贴图片。验收:App 与 CLI 互通同一会话;签名公证发布;**Terminal-Bench 2.0 ≥40%**。
-- **M3 差异化纵深**:draw/strike/sheathe 模式化 + jobs + MCP(延迟加载默认)+ Skills(SKILL.md 双通道)+ 成本看板 + egress proxy + App inspector tab + hooks(exec 式六事件)。验收:**Terminal-Bench 2.0 ≥55%**;App 内完成一次并行双会话真实任务。
+- **M3 差异化纵深**:默认工作流包(draw/strike/sheathe,以 skills+plan-mode+profile 实现,可卸载)+ jobs + MCP(延迟加载默认)+ Skills(SKILL.md 双通道)+ 成本看板 + egress proxy + App inspector tab + hooks(exec 式六事件)。验收:**Terminal-Bench 2.0 ≥55%**;App 内完成一次并行双会话真实任务;**禁用工作流包后基座完整可用,TB2.0 对照分差 ≤3%**。
 
 ### 5.3 明确不做(YAGNI)
 
