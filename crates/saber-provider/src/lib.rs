@@ -47,6 +47,9 @@ pub struct ChatRequest {
     /// Provider-agnostic reasoning budget; adapters map to native knobs
     /// (Anthropic `thinking.budget_tokens`, reasoning-effort elsewhere).
     pub thinking_budget_tokens: Option<u64>,
+    /// Minimal cache breakpoint: when true, adapters mark the system prompt
+    /// as a cacheable prefix (Anthropic `cache_control` ephemeral).
+    pub cache_system_prompt: bool,
 }
 
 /// Why a model response finished.
@@ -75,14 +78,20 @@ pub enum RetryKind {
 }
 
 /// Unified provider streaming event. Terminal: after `Finish` or `Error`
-/// the stream ends.
-#[derive(Debug, Clone, PartialEq)]
+/// the stream ends. Serializable so engine layers can persist and forward
+/// provider errors through the session/event stream without manual mapping.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderEvent {
     TextDelta {
-        text: String,
+        text_delta: String,
     },
+    /// `signature_delta` (Anthropic) arrives as a ThinkingDelta with empty
+    /// `text_delta` and `Some(signature)`; history replay needs it.
     ThinkingDelta {
-        text: String,
+        text_delta: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
     },
     ToolCallStart {
         id: String,
@@ -105,13 +114,53 @@ pub enum ProviderEvent {
 }
 
 /// Failures that prevent a stream from starting at all (misconfiguration).
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderError {
-    #[error("invalid provider config: {0}")]
-    Config(String),
+    #[error("invalid provider config: {message}")]
+    Config { message: String },
 }
 
 pub type ProviderStream = BoxStream<'static, ProviderEvent>;
+
+/// A provider stream that owns its driver task: dropping the stream aborts
+/// the in-flight HTTP response immediately (no orphaned generation/billing
+/// after cancellation). The driver also exits as soon as the receiver goes
+/// away, so both directions of teardown are covered.
+pub struct OwnedStream {
+    rx: futures::channel::mpsc::Receiver<ProviderEvent>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl OwnedStream {
+    pub fn new(
+        rx: futures::channel::mpsc::Receiver<ProviderEvent>,
+        handle: tokio::task::JoinHandle<()>,
+    ) -> Self {
+        Self { rx, handle }
+    }
+
+    pub fn boxed(self) -> ProviderStream {
+        Box::pin(self)
+    }
+}
+
+impl futures::Stream for OwnedStream {
+    type Item = ProviderEvent;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.rx).poll_next(cx)
+    }
+}
+
+impl Drop for OwnedStream {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
 
 /// A model backend. Implementations: [`openai::OpenAiCompatProvider`],
 /// [`anthropic::AnthropicProvider`], [`mock::MockProvider`].
@@ -146,5 +195,28 @@ mod tests {
         assert_eq!(retry_kind_for_status(503), RetryKind::ServerError);
         assert_eq!(retry_kind_for_status(408), RetryKind::Timeout);
         assert_eq!(retry_kind_for_status(400), RetryKind::Fatal);
+    }
+
+    #[test]
+    fn provider_events_roundtrip_through_serde() -> Result<(), serde_json::Error> {
+        let events = vec![
+            ProviderEvent::TextDelta {
+                text_delta: "hi".into(),
+            },
+            ProviderEvent::ThinkingDelta {
+                text_delta: String::new(),
+                signature: Some("sig".into()),
+            },
+            ProviderEvent::Error {
+                message: "boom".into(),
+                retryable: RetryKind::RateLimit,
+            },
+        ];
+        for event in events {
+            let json = serde_json::to_string(&event)?;
+            let back: ProviderEvent = serde_json::from_str(&json)?;
+            assert_eq!(back, event);
+        }
+        Ok(())
     }
 }

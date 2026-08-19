@@ -57,19 +57,26 @@ pub fn lookup(model: &str) -> Option<Price> {
     Some(price)
 }
 
-/// `chars / 4` — provider usage is authoritative when reported; this only
+/// `chars / 4` (character count, not bytes — CJK text estimates 4× too high
+/// on bytes). Provider usage is authoritative when reported; this only
 /// fills gaps for budget warnings.
 pub fn estimate_tokens(text: &str) -> u64 {
-    (text.len() as u64).div_ceil(4)
+    (text.chars().count() as u64).div_ceil(4)
 }
 
 /// Completes a usage record: fills estimated input tokens when the provider
-/// reported none, and computes `cost_usd` from the static price table.
-pub fn finalize_usage(mut usage: Usage, model: &str, fallback_input_text: &str) -> Usage {
+/// reported none, and computes `cost_usd` from the configured price (or the
+/// static table when no override is supplied).
+pub fn finalize_usage(
+    mut usage: Usage,
+    model: &str,
+    fallback_input_text: &str,
+    price_override: Option<Price>,
+) -> Usage {
     if usage.input_tokens == 0 && !fallback_input_text.is_empty() {
         usage.input_tokens = estimate_tokens(fallback_input_text);
     }
-    if let Some(price) = lookup(model) {
+    if let Some(price) = price_override.or_else(|| lookup(model)) {
         usage.cost_usd = usage.input_tokens as f64 / 1e6 * price.input_per_mtok
             + usage.output_tokens as f64 / 1e6 * price.output_per_mtok
             + usage.cache_read_tokens as f64 / 1e6 * price.cache_read_per_mtok
@@ -83,11 +90,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn estimation_is_chars_div_ceil_four() {
+    fn estimation_counts_chars_not_bytes() {
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("abc"), 1);
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("abcde"), 2);
+        // CJK: 2 chars → 1, not bytes/4 = 2.
+        assert_eq!(estimate_tokens("你好"), 1);
     }
 
     #[test]
@@ -100,14 +109,35 @@ mod tests {
             },
             "claude-sonnet-4-5",
             "ignored fallback",
+            None,
         );
         assert!((usage.cost_usd - 18.0).abs() < 1e-6);
     }
 
     #[test]
     fn unknown_model_costs_zero_but_tokens_estimate() {
-        let usage = finalize_usage(Usage::default(), "mystery-model", "12345678");
+        let usage = finalize_usage(Usage::default(), "mystery-model", "12345678", None);
         assert_eq!(usage.input_tokens, 2);
         assert_eq!(usage.cost_usd, 0.0);
+    }
+
+    #[test]
+    fn price_override_beats_table_lookup() {
+        let usage = finalize_usage(
+            Usage {
+                input_tokens: 1_000_000,
+                output_tokens: 0,
+                ..Usage::default()
+            },
+            "claude-sonnet-4-5",
+            "",
+            Some(Price {
+                input_per_mtok: 1.0,
+                output_per_mtok: 1.0,
+                cache_read_per_mtok: 0.0,
+                cache_write_per_mtok: 0.0,
+            }),
+        );
+        assert!((usage.cost_usd - 1.0).abs() < 1e-6);
     }
 }
