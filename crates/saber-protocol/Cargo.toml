@@ -11,5 +11,3 @@ description = "Single source of truth for saber wire protocol: RPC methods, Even
 workspace = true
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }

@@ -11,10 +11,3 @@ description = "macOS Seatbelt sandbox for tool subprocesses: workspace-write-lit
 workspace = true
 
 [dependencies]
-thiserror = { workspace = true }
-
-[dev-dependencies]
-anyhow = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-tempfile = "3"
