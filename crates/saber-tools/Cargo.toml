@@ -1,0 +1,21 @@
+[package]
+name = "saber-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tool contracts, registry, conflict-aware scheduler, and the built-in tools: bash, read, write, edit, grep, glob."
+
+[lints]
+workspace = true
+
+[dependencies]
+saber-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "saber-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "macOS Seatbelt sandbox for tool subprocesses: workspace-write-lite profile, deny-read secrets globs, network deny, env allowlist."
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tempfile = "3"

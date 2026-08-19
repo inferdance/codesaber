@@ -1,0 +1,13 @@
+[package]
+name = "saber-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Resident engine server: bidirectional JSON-RPC 2.0 over a Unix domain socket — placeholder crate, activated in M2."
+
+[lints]
+workspace = true
+
+[dependencies]

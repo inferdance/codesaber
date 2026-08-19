@@ -1,0 +1,21 @@
+[package]
+name = "saber-provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Model access layer: OpenAI-compatible and Anthropic Messages adapters, unified streaming events, usage/cost accounting, retry and failover."
+
+[lints]
+workspace = true
+
+[dependencies]
+saber-protocol = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "saber-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP client (stdio/HTTP, namespaced tools, deferred loading) — placeholder crate, activated in M3."
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,20 @@
+[package]
+name = "saber-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The `saber` binary: TUI, resident server, headless exec, and session resume frontends over the shared engine."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "saber"
+path = "src/main.rs"
+
+[dependencies]
+saber-core = { workspace = true }
+saber-protocol = { workspace = true }
+anyhow = { workspace = true }
