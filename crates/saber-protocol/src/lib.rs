@@ -9,8 +9,6 @@
 //! over a Unix domain socket. Events are JSON-RPC notifications carrying a
 //! monotonic sequence number; framing is newline-delimited JSON — no SSE.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-
 /// Version of the saber engine<->frontend protocol (semver).
 ///
 /// Frozen as `1.0.0` at M2; until then breaking changes stay within 0.x.

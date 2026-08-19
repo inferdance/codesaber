@@ -22,7 +22,7 @@
 ### T1 Workspace 脚手架(0.5d)
 - cargo workspace:9 crates 骨架(protocol/core/tools/provider/sandbox/jobs/mcp/server/cli;M0 激活 protocol/core/tools/provider/sandbox/cli,其余空壳占位防后续大挪移);
 - `[workspace.lints]`:deny unwrap/expect/clippy::all -D;rustfmt.toml;deny.toml(license=Apache-2.0 兼容、advisory);Cargo.lock 提交;测试跑 cargo-nextest;
-- GitHub Actions:fmt + clippy + nextest + cargo-deny + cargo-shear + schema-sync(PR 与 nightly)。
+- GitHub Actions:fmt + clippy + nextest + cargo-deny + cargo-shear + nightly schedule 触发(重跑全部门禁捕捉新 advisories);schema-sync 随 T2(schema artifact 诞生时)加入 PR 与 nightly。
 - 验收:CI 全绿样板。
 
 ### T2 saber-protocol v0(1d)

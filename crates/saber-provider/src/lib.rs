@@ -9,8 +9,6 @@
 //! because LLM streams are just `data:` lines plus `[DONE]` and
 //! reqwest-eventsource is unmaintained.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-
 /// Placeholder for the unified streaming event model landing with T3.
 pub const PROVIDER_LAYER_VERSION: &str = "0.1.0";
 

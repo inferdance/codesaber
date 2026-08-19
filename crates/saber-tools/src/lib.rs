@@ -13,8 +13,6 @@
 //!   policy: canonicalized targets must stay under cwd or the saber data
 //!   directory.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-
 /// Number of built-in tools planned for M0.
 pub const M0_TOOL_COUNT: usize = 6;
 

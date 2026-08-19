@@ -7,8 +7,6 @@
 //! after the side effect completes. Recovery treats "intent without
 //! result" as an unfinished call instead of replaying it.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-
 /// Engine build identity exposed to frontends for version handshakes.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 

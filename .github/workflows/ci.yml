@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly: re-runs all gates so new cargo-deny advisories are caught
+    # even when the repo is quiet. Schema-sync joins PR + nightly with T2.
+    - cron: "0 19 * * *"
 
 env:
   CARGO_TERM_COLOR: always
