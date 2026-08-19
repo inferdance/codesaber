@@ -38,7 +38,7 @@ codesaber/
 │   ├── saber-sandbox    # macOS Seatbelt(.sbpl 模板)+ 命令前缀策略
 │   ├── saber-jobs       # 后台任务:JobRegistry(start/list/read/kill/wait)
 │   ├── saber-mcp        # rmcp 客户端(stdio/HTTP,命名空间注入)
-│   ├── saber-server     # 常驻引擎:UDS 上的 JSON-RPC + SSE 事件流
+│   ├── saber-server     # 常驻引擎:UDS 上的双向 JSON-RPC + notification 事件流
 │   ├── saber-tui        # ratatui TUI(原生 scrollback 手法)
 │   └── saber-cli        # 入口,arg0 多路分发:tui/server/exec/resume
 ├── app/                 # CodeSaber.app(SwiftUI,Xcode 工程)
@@ -48,10 +48,10 @@ codesaber/
 ### 2.2 进程模型与通信
 
 - 单一二进制 `saber`,多模式:`saber`(TUI)/ `saber server`(常驻,launchd 管理)/ `saber exec -p`(headless)/ `saber resume`;**App bundle 内嵌版本锁定的 sidecar 引擎二进制**,也支持 attach 已运行的系统实例。
-- 通信:Unix domain socket(默认 `~/.codesaber/daemon.sock`,可配置)上的**单连接双向 JSON-RPC 2.0**——前端与引擎互为 caller(审批/追问走引擎→前端反向调用,zcode reverse-rpc 同款);事件以 JSON-RPC notification 推送,前端 `subscribe(session_id)` 订阅、通知带 session 路由;协议独立 semver,握手带版本+能力协商。App v1 严格只用内嵌 sidecar(版本强锁定),attach 外部实例 = M3+。
+- 通信:Unix domain socket(默认 `~/.codesaber/daemon.sock`,可配置)上的**单连接双向 JSON-RPC 2.0**——前端与引擎互为 caller(审批/追问走引擎→前端反向调用,zcode reverse-rpc 同款);事件以 JSON-RPC notification 推送,前端 `subscribe(session_id)` 订阅、通知带 session 路由;协议独立 semver,握手带版本+能力协商。notification 携带单调序号(seq)与 session 路由,重连后可按 seq 重放,分帧统一为换行分隔 JSON(不使用 SSE)。App v1 严格只用内嵌 sidecar(版本强锁定),attach 外部实例 = M3+。
 - **任何前端看到同一份会话事实**:App 发起的会话 CLI 能 resume,终端跑一半的任务 App 能接手。
 - 数据目录 `~/.codesaber/`:sessions(JSONL 事件溯源)、config.toml、truncations/;凭据存 macOS Keychain(明文不落盘)。
-- 分发:CLI 走 brew(预编译二进制)/cargo;App 走 Developer ID 签名 + 公证 + Sparkle 自动更新。
+- 分发:CLI 走 brew(预编译二进制)/cargo;App 走 Developer ID 签名 + 公证 + Sparkle 自动更新。README 的 npm 表述随 M0-T8 同步修正为 brew/cargo(如后续需要 npm 渠道,再加 npm 包装层,非 M0 范围)。
 
 ## 3. 引擎核心设计(saber-core)
 
@@ -85,7 +85,7 @@ codesaber/
 ### 3.4 权限与沙箱:三档模式 + Seatbelt
 
 - 模式:`read-only` / `workspace-write`(默认)/ `danger-full-access`;审批 `ask/once/always`,always 按命令前缀记忆并可热更新(codex execpolicy 思路;Starlark 完整策略引擎留给 v2)。
-- 沙箱:macOS Seatbelt(`sandbox-exec` 策略模板;workspace-write 下 cwd 可写、网络走本地代理);执行闭环:"沙箱预执行→拒绝识别→升级审批→重试"(codex orchestrator 手法)。
+- 沙箱:macOS Seatbelt(`sandbox-exec` 策略模板;workspace-write 下 cwd 可写、网络走本地代理);执行闭环:"沙箱预执行→拒绝识别→升级审批→重试"(codex orchestrator 手法)。**最小 Seatbelt 自 M0 生效**(可写 = cwd + `~/.codesaber/`、禁网、**工具子进程环境白名单**——只传 PATH/HOME/LANG/TMPDIR,密钥只存在于引擎进程内,绝不传入子进程),审批闭环 M1 接入。
 - bash 权限 AST 级解析(tree-sitter-bash 抽命令前缀+路径参数分别询问,opencode 手法);`.env`/秘钥文件读取硬拒绝。
 
 ### 3.5 后台任务(saber-jobs)
@@ -125,7 +125,7 @@ codesaber/
 
 ### 4.3 headless
 
-`saber exec -p "..." --json` 输出 JSONL 事件流,支持 `--output-schema` 结构化结果——CI、Harbor 评测、脚本编排的统一入口,M0 即具备。
+`saber exec -p "..." --json` 输出 JSONL 事件流(M0 即具备);`--output-schema <path>` 结构化输出 = M1(定义:schema 校验、不符时一次重试、失败退出码)。这是 CI、Harbor 评测、脚本编排的统一入口。
 
 ### 4.4 数据流(一次 turn)
 
@@ -141,20 +141,20 @@ codesaber/
 
 - Provider 层:限流/超时指数退避重试;上下文溢出→自动 compact→重试(最多 3 次降级,kimi 手法)。
 - 工具层:失败转为 `isError` 的 tool_result 回给模型(不崩溃循环);截断输出带警告头。
-- 引擎层:会话日志批量 flush;崩溃后从撕裂行截断恢复(dsh torn-frame 手法);server 崩溃由 launchd 拉起,前端自动重连+事件重放。
+- 引擎层:会话日志采用 **WAL 语义**——工具副作用执行前同步落 `tool_call` intent、执行后落 result(其余事件可批量 flush);崩溃恢复时显式识别"有 intent 无 result"的未完成调用,撕裂行截断仅处理半行写入;server 崩溃由 launchd 拉起,前端自动重连+按 seq 事件重放。
 
 ## 5. 测试、评测与里程碑
 
 ### 5.1 测试策略(三层)
 
-1. **单元/集成**:mock provider(录制/回放 SSE)驱动完整 loop;turn/steering/压缩/权限全部可离线测;insta 快照测协议事件序列。
+1. **单元/集成**:mock provider(录制/回放 LLM API 的 SSE 流,与前端协议无关)驱动完整 loop;turn/steering/压缩/权限全部可离线测;insta 快照测协议事件序列。
 2. **协议一致性 CI**:JSON Schema 生成物(Swift/TS)与 Rust 类型同步校验,防前后端漂移。
 3. **真机评测(Harbor)**:`BaseAgent` 适配器包 `saber exec --json`;PR 冒烟 terminal-bench 子集(10 题),夜间全量 + `--attempts 3`;私有回归集从真实工单沉淀(task.toml + Dockerfile + test.sh + solution/)。每次 prompt/工具改动都要有分数。
 
 ### 5.2 里程碑
 
-- **M0 引擎骨架**:workspace + protocol + provider 两家(OpenAI 兼容 + Anthropic)+ loop + 6 工具 + JSONL 会话;`saber exec` 完成"读→改→跑测试";质量门禁全套上线(lints/cargo-deny/insta)。验收:Harbor 10 题基线分。
-- **M1 可用 CLI**:TUI + steering + 权限三档 + compaction 两层 + resume + headless + 第三家 provider(Ollama)+ **failover** + **`saber replay` 回放器** + OTel trace。验收:日常自用一天不打断;夜间回归无退化。
+- **M0 引擎骨架**:workspace + protocol + provider 两家(OpenAI 兼容 + Anthropic)+ loop + 6 工具 + JSONL 会话(WAL 语义)+ **最小 Seatbelt 沙箱(写边界+禁网+子进程环境白名单)**;`saber exec` 完成"读→改→跑测试";质量门禁全套上线(lints/cargo-deny/insta)。验收:Harbor 10 题基线分。
+- **M1 可用 CLI**:TUI + steering + 权限三档 + compaction 两层 + resume + headless(`--output-schema <path>` 结构化输出)+ 第三家 provider(Ollama)+ **failover** + **`saber replay` 回放器** + OTel trace。验收:日常自用一天不打断;夜间回归无退化。
 - **M2 Mac App**:saber-server 常驻 + Swift 协议生成 + App 四区 + worktree 并行会话 + 通知 + **协议 v1 冻结(兼容性进 CI)** + `read_image`/App 粘贴图片。验收:App 与 CLI 互通同一会话;签名公证发布;**Terminal-Bench 2.0 ≥40%**。
 - **M3 差异化纵深**:draw/strike/sheathe 模式化 + jobs + MCP(延迟加载默认)+ Skills(SKILL.md 双通道)+ 成本看板 + egress proxy + App inspector tab + hooks(exec 式六事件)。验收:**Terminal-Bench 2.0 ≥55%**;App 内完成一次并行双会话真实任务。
 
@@ -162,7 +162,7 @@ codesaber/
 
 内嵌 JS 插件运行时;Windows/Linux 沙箱(跨平台只留抽象缝隙);订阅 OAuth(MVP);云同步/团队协作;自训模型;**audio/video 多模态**。v2 再评估:Starlark 完整策略引擎、模型智能路由、WASM 插件 ABI、多机 attach、auto-memory(opt-in)。
 
-License:**Apache-2.0**(带专利授权,README 的 TBD 就此落定)。App 最低系统版本:**macOS 14+**(SwiftUI Observation 基线)。
+License:**Apache-2.0**——LICENSE 文件与 README 同步落地于 M0-T8(设计文档本身不构成授权)。App 最低系统版本:**macOS 14+**(SwiftUI Observation 基线)。
 
 ## 6. 参考实现映射(抄哪儿)
 
@@ -215,7 +215,7 @@ License:**Apache-2.0**(带专利授权,README 的 TBD 就此落定)。App 最低
 | 18 | Skills 双通道(pi 式):系统提示词只常驻清单(name+description),正文由模型 read 自取;`/skill-name` 手动展开 |
 | 19 | 调试:M1 `saber replay`(快进/过滤/事件树,事件日志直接投影);M3 App inspector tab |
 | 20 | 版本:协议独立 semver,v1 于 M2 冻结、兼容性进 CI;引擎/CLI/App 同 repo 同 tag;0.x 每周 tag,M3 后按需 |
-| 21 | License:Apache-2.0 |
+| 21 | License:Apache-2.0(LICENSE 文件与 README 随 M0-T8 落地) |
 | 22 | plan 载体:`.codesaber/plans/<session>-<slug>.md` 结构化 markdown(frontmatter status:drawn/striking/shipped);draw 产出、strike 消费、sheathe 归档,跨会话可复用、可 git 提交 |
 | 23 | App 最低系统版本 macOS 14+(SwiftUI Observation 基线) |
 

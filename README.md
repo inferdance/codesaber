@@ -39,7 +39,7 @@ one clean cut over a thousand scattered edits.
 
 ```bash
 # Coming soon
-npm install -g codesaber
+brew install codesaber   # or: cargo install codesaber
 
 saber draw    # plan
 saber strike  # execute
@@ -62,7 +62,7 @@ Watch this repo to be notified.
 
 ## 📄 License
 
-TBD (open source, decided before first release).
+Apache License 2.0 — the LICENSE file lands with the first blade (M0).
 
 ---
 
