@@ -1,6 +1,6 @@
 # 技术栈最佳实践补充调研(2025-2026 联网核实)
 
-> 日期:2026-08-19。目的:为 CodeSaber 技术栈(Rust 引擎 + SwiftUI App + ratatui + UDS JSON-RPC + Seatbelt)核实当前生态选型。标注 ⚠️ 的为"与我们原设想有差异/需要修正"项。
+> 日期:2026-08-19。目的:为 CodeSaber 技术栈(Rust 引擎 + SwiftUI App + ratatui + UDS JSON-RPC + Seatbelt)核实当前生态选型。标注 ⚠️ 的为"与我们原设想有差异/需要修正"项;✅ 表示经核实直接成立的决策(下文未逐一标注 ✅ 的条目默认为常规确认)。
 
 ## 0. 速查表
 

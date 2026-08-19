@@ -1,16 +1,16 @@
 # M0 实施计划:CodeSaber 引擎骨架
 
 > 日期:2026-08-19。上游 spec:`docs/superpowers/specs/2026-08-19-codesaber-mac-coding-agent-design.md`。
-> M0 目标:可 headless 完成真实编码任务的最小引擎 + 质量门禁 + 评测基线。**不含** TUI、server、App、权限审批 UI;**含**最小 Seatbelt 沙箱(M0 的 bash/写文件都跑在沙箱内,见 T4b)。
+> M0 目标:可 headless 完成真实编码任务的最小引擎 + 质量门禁 + 评测基线。**不含** TUI、server、App、权限审批 UI;**含**最小 Seatbelt 沙箱(bash 跑在沙箱内)+ 引擎级写路径策略(write/edit,见 T4/T4b)。
 
 ## Definition of Done
 
 1. `saber exec -p "任务"` 在真实仓库完成"读 → 改 → 跑测试"闭环,输出 JSONL 事件流;
 2. Harbor adapter 就绪,terminal-bench 子集 10 题跑出基线分(数字记录进 `docs/eval/baseline-m0.md`);
-3. 质量门禁全绿:workspace lints(deny unwrap/expect)+ `clippy -D warnings` + `cargo-deny`(单门禁:advisories/bans/licenses/sources;cargo-audit 维护者已退出,不采用)+ insta 快照 + 依赖锁定;
+3. 质量门禁全绿:workspace lints(deny unwrap/expect)+ `clippy -D warnings` + `cargo-deny`(单门禁:advisories/bans/licenses/sources;cargo-audit 维护者已退出,不采用)+ cargo-shear + insta 快照 + 依赖锁定;
 4. 协议 JSON Schema artifact 构建期生成(`saber-protocol/schema/`),CI 校验与 Rust 类型同步;
 5. mock provider 驱动的 loop 集成测试覆盖:正常 turn / length 拒执行 / doom-loop / 工具失败回错;
-6. 沙箱边界测试:bash 写 cwd 之外被拒、网络被拒、子进程 `env` 中无 `SABER_*`/密钥变量(环境白名单生效)。
+6. 边界测试:bash 写 cwd 之外被拒、网络被拒、`.ssh`/`.env` 读被拒、子进程 `env` 中无 `SABER_*`/密钥变量(环境白名单生效)、write/edit 越界路径被引擎拒绝。
 
 ## 环境前置
 
@@ -22,13 +22,13 @@
 ### T1 Workspace 脚手架(0.5d)
 - cargo workspace:9 crates 骨架(protocol/core/tools/provider/sandbox/jobs/mcp/server/cli;M0 激活 protocol/core/tools/provider/sandbox/cli,其余空壳占位防后续大挪移);
 - `[workspace.lints]`:deny unwrap/expect/clippy::all -D;rustfmt.toml;deny.toml(license=Apache-2.0 兼容、advisory);Cargo.lock 提交;测试跑 cargo-nextest;
-- GitHub Actions:fmt + clippy + nextest + cargo-deny + schema-sync(PR 与 nightly)。
+- GitHub Actions:fmt + clippy + nextest + cargo-deny + cargo-shear + schema-sync(PR 与 nightly)。
 - 验收:CI 全绿样板。
 
 ### T2 saber-protocol v0(1d)
 - 内部消息模型(spec §3.4/R1-Q4 全深度):`Message{role, blocks}`,`Block = Text | Thinking | ToolCall | ToolResult | Image`;`Usage{input,output,cache_read,cache_write,cost}`;
 - `EventMsg` v0:`TurnStarted/TurnComplete/StepStarted/AssistantDelta(Text|Thinking|ToolCallDelta)/ToolStarted/ToolOutputDelta/ToolCompleted/TokenCount/Error`;
-- 会话 JSONL 事件 schema(`{ts, seq, session_id, type, payload}`,type 覆盖 session_meta/user_message/assistant_message/tool_result/error/compaction);
+- 会话 JSONL 事件 schema(`{ts, seq, session_id, type, payload}`,type 覆盖 session_meta/user_message/assistant_message/**tool_call(WAL intent,副作用前同步落盘)**/tool_result/error/compaction);
 - schemars 导出 + `schema/` artifact 写盘任务(build.rs 或 xtask)。
 - 验收:insta 快照锁定 schema;schema-sync CI 通过。
 
@@ -46,8 +46,8 @@
 - 六工具:
   - `bash`:**经 T4b Seatbelt 执行**、进程树超时杀、输出头尾截断 + 全量落 `~/.codesaber/truncations/`(7 天);
   - `read`:cat -n 行号、2000 行/单行 2000 字符、二进制探测;
-  - `write`:存在文件须先 read(会话状态校验);
-  - `edit`:old/new 唯一替换 + 容错链前六级 + disproportionate 防护 + 每文件互斥 + CRLF/BOM 保留;
+  - `write`/`edit`:**引擎级写路径策略**——目标路径 canonicalize 后必须落在 cwd 或 `~/.codesaber/` 前缀内,越界直接拒绝(write/edit 在引擎进程内执行,引擎因需外调 LLM 不能自身入沙箱;M1 评估下放沙箱执行器执行,codex 的 apply_patch 即走沙箱执行);write 要求存在文件先 read(会话状态校验);
+  - `edit`:old/new 唯一替换 + 容错链前六级 + disproportionate 防护 + 每文件互斥 + CRLF/BOM 保留;路径策略同 `write`;
   - `grep`/`glob`:`grep-searcher`/`grep-regex`(ripgrep 内核)+ `ignore`/`globset`/`walkdir`(globwalk 已进维护模式,不采用);
 - 提示词侧工具描述遵循 Claude Code 手法(细则进 description 不进系统提示词)。
 - 验收:edit 容错链测试矩阵(≥20 case);并行/互斥调度测试。
@@ -56,7 +56,7 @@
 - `sandbox-exec` 策略模板(M0 档 `workspace-write-lite`,参照 codex `sandboxing/src/*.sbpl`):`(deny default)` 起步,放行 process-exec/fork、sysctl-read(含 `hw.optional.arm.*`)、PTY、cfprefs;可写 = canonicalize 后的 cwd + `~/.codesaber/`(⚠️ `/var`→`/private/var` 归一化;排除子路径用 `require-not (literal)` + `(subpath)` 双条);其余只读;
 - **读侧防护**:显式 `(deny file-read* (subpath "~/.ssh"))` + workspace 内 `**/.env` glob deny(TCC 不救场,子进程继承终端 Full Disk Access);
 - **M0 全禁网**(策略不写任何 network allow 即默认拒绝):LLM API 调用在沙箱外引擎主进程,子进程无需网络;M1+ 需要装依赖时再评估 codex 式本地代理;
-- 子进程环境白名单(只传 PATH/HOME/LANG/TMPDIR),引擎密钥不进子进程;
+- 子进程环境白名单(只传 PATH/HOME/LANG/TMPDIR),引擎密钥不进子进程;沙箱只覆盖 bash 等子进程执行,write/edit 的边界由引擎路径策略保证(见 T4);
 - M1 的权限网关/审批升级在此之上接入(本任务只做强制边界,不做审批)。
 - 验收:DoD#6 沙箱边界测试三件套(cwd 外写被拒 / 网络被拒 / env 无密钥)+ `.ssh`/`.env` 读被拒。
 
@@ -68,7 +68,7 @@
 - 验收:mock 集成测试五场景(DoD#5);崩溃恢复测试覆盖工具执行边界(kill -9 于"intent 已落、副作用已发生、result 未落"时刻,重建后标记未完成调用而非重放)+ 尾行撕裂截断。
 
 ### T6 saber-cli headless(1d)
-- `saber exec -p "<prompt>" [--json] [--model]`(`--output-schema <path>` 挪 M1:M0 不实现,避免无验收的半成品开关);非交互权限策略 v0 = **T4b Seatbelt 强制**(写边界+禁网+环境白名单),敏感路径(.env/秘钥)在 read/write/edit 工具层硬拒绝(提示层,真正边界由沙箱保证);
+- `saber exec -p "<prompt>" [--json] [--model]`(`--output-schema <path>` 挪 M1:M0 不实现,避免无验收的半成品开关);非交互权限策略 v0 = **bash 由 T4b Seatbelt 强制,write/edit 由引擎路径策略强制**(禁网+环境白名单见 T4b/T4);敏感路径(.env/秘钥)在 read/write/edit 工具层硬拒绝(提示层,与强制层双保险);
 - 退出码与事件流契约文档化。
 - 验收:DoD#1 端到端。
 

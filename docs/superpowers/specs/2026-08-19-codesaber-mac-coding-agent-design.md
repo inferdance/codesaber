@@ -20,7 +20,7 @@
 | 技术栈 | **Rust 引擎 + SwiftUI App** |
 | 模型接入 MVP | **API key 先行**:OpenAI 兼容 + Anthropic Messages 两种线协议 + Ollama 本地 |
 | App 定位 | 对标 **Codex macOS app / zcode**:完整 GUI 客户端(会话流、diff 审阅、审批、任务中心),CLI 全功能 |
-| 引擎-App 连接 | **方案 A:常驻引擎进程 + 多前端**(类型化 JSON-RPC/SSE over Unix domain socket) |
+| 引擎-App 连接 | **方案 A:常驻引擎进程 + 多前端**(UDS 上的双向 JSON-RPC + notification 事件流) |
 
 被否的备选:方案 B(FFI 内嵌,App/CLI 会话不互通)、方案 C(内嵌 JS 插件层,YAGNI 留给 v2)。
 
@@ -120,7 +120,7 @@ codesaber/
 ### 4.2 SwiftUI App(CodeSaber.app)
 
 - 信息架构四区:**会话列表侧栏**(每会话=独立 git worktree,显示状态/成本/耗时)· **会话主视图**(消息流+工具调用可折叠+流式 diff)· **审批中心**(权限请求集中处理)· **任务中心**(jobs 监控);菜单栏常驻 + 全局快捷键唤起。
-- 架构:SwiftUI + Observation(MV 模式);网络层为构建期生成的 Codable 客户端(UDS JSON-RPC + SSE);**App 不做业务决策,全部状态来自引擎事件流**(opencode"前端只是事件流的视图"原则)——保证 CLI/App 行为永远一致。
+- 架构:SwiftUI + Observation(MV 模式);网络层为构建期生成的 Codable 客户端(UDS 上的双向 JSON-RPC,事件经 notification 订阅);**App 不做业务决策,全部状态来自引擎事件流**(opencode"前端只是事件流的视图"原则)——保证 CLI/App 行为永远一致。
 - 原生独占能力:Keychain(Security framework)、UserNotifications、菜单栏、剪贴板、FSEvents 文件监听(由引擎 notify 推事件,客户端只渲染)、后续 Services/Shortcuts。⚠️ Markdown 渲染注意:MarkdownUI 已进维护模式且有长文性能 issue,M2 前须做流式压测,备选段落级缓存 + AttributedString 自绘。
 
 ### 4.3 headless
@@ -205,7 +205,7 @@ License:**Apache-2.0**——LICENSE 文件与 README 同步落地于 M0-T8(设�
 | 13 | MCP:命名空间 `mcp__server__tool` + description 截断(2048)+ **延迟加载默认**(tool_search 按需拉,codex ToolExposure::Deferred);stdio+HTTP;OAuth/elicitation 后置 |
 | 14 | 模型路由:failover v1(同请求失败自动换备用);智能路由 v2;成本 = usage 权威 + chars/4 估算 + 静态价格表 + 会话/日预算软告警 |
 | 15 | 记忆:AGENTS.md 层级只读注入(沿祖先链,兼容读 CLAUDE.md);auto-memory = v2 且默认 opt-in |
-| 16 | 质量门禁 M0 起:workspace lints(deny unwrap/expect + clippy -D warnings)+ cargo-deny + cargo-audit + insta 快照 + 依赖锁定 |
+| 16 | 质量门禁 M0 起:workspace lints(deny unwrap/expect + clippy -D warnings)+ cargo-deny 单门禁(2026-08 更新:cargo-audit 维护者已退出,弃用)+ cargo-shear + insta 快照 + 依赖锁定 |
 
 **Round 3 — 收尾细节**
 
@@ -226,7 +226,9 @@ License:**Apache-2.0**——LICENSE 文件与 README 同步落地于 M0-T8(设�
 - **审批协议**(双向 JSON-RPC 的第一个反向调用):`approval/request` → 前端展示命令/diff/触发规则 → `approval/response {once|always|reject}`;always 按 AST 前缀+路径集记忆;reject 级联同会话 pending(opencode 手法)。
 - **failover 配置**:`[model_failover] primary = "anthropic/claude-..." fallback = ["openai-compat/deepseek-...", "ollama/qwen3-coder"]`,限流/超时/5xx 触发,同 turn 内最多切换 2 次。
 
-## 8. 技术栈选型速查(2026-08 联网核实,详见 docs/research/08)
+## 8. 技术栈选型速查(2026-08 联网核实)
+
+> 事实源为 `docs/research/08-tech-stack-best-practices.md`,此表仅作速查;两者如有漂移,以 research/08 为准。
 
 | 领域 | 选型 | 关键核实结论 |
 |---|---|---|
