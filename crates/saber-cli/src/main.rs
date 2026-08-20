@@ -191,7 +191,8 @@ async fn async_move_exec(
     let bash_executor: Arc<dyn saber_tools::bash::BashExecutor> =
         Arc::new(saber_sandbox::SeatbeltExecutor);
     #[cfg(not(target_os = "macos"))]
-    let bash_executor: Arc<dyn saber_tools::bash::BashExecutor> = Arc::new(DirectExecutor);
+    let bash_executor: Arc<dyn saber_tools::bash::BashExecutor> =
+        Arc::new(saber_tools::bash::DirectExecutor);
     for tool in builtin_tools(bash_executor) {
         registry.register(tool);
     }
