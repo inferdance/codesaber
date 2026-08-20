@@ -48,7 +48,7 @@ codesaber/
 ### 2.2 进程模型与通信
 
 - 单一二进制 `saber`,多模式:`saber`(TUI)/ `saber server`(常驻,launchd 管理)/ `saber exec -p`(headless)/ `saber resume`;**App bundle 内嵌版本锁定的 sidecar 引擎二进制**,也支持 attach 已运行的系统实例。
-- 通信:Unix domain socket(默认 `~/.codesaber/daemon.sock`,可配置)上的**单连接双向 JSON-RPC 2.0**——前端与引擎互为 caller(审批/追问走引擎→前端反向调用,zcode reverse-rpc 同款);事件以 JSON-RPC notification 推送,前端 `subscribe(session_id)` 订阅、通知带 session 路由;协议独立 semver,握手带版本+能力协商。notification 携带单调序号(seq)与 session 路由,重连后可按 seq 重放,分帧统一为换行分隔 JSON(不使用 SSE)。App v1 严格只用内嵌 sidecar(版本强锁定),attach 外部实例 = M3+。
+- 通信:Unix domain socket(默认 `~/.codesaber/daemon.sock`,可配置)上的**单连接双向 JSON-RPC 2.0**——前端与引擎互为 caller(审批/追问走引擎→前端反向调用,zcode reverse-rpc 同款);事件以 JSON-RPC notification 推送,前端 `subscribe(session_id)` 订阅、通知带 session 路由;协议独立 semver,握手带版本+能力协商。notification 携带连接内单调序号(seq,仅作连接内排序)与 session 路由;**跨重连恢复使用持久 session_revision(源自会话日志)或快照,不得声称用连接序号重放**(2026-08-20 修正:server 重启后连接 seq 归零,重放承诺不成立);预留 namespaced ExtensionEvent/ExtensionState 扩展槽,未知事件与未知字段必须可忽略;冻结流程:核心稳定时标 **v1-rc**,经真实 UDS 客户端(握手/订阅/断线恢复/反向调用)验证后升 v1;分帧统一为换行分隔 JSON(不使用 SSE)。App v1 严格只用内嵌 sidecar(版本强锁定),attach 外部实例 = M3+。
 - **任何前端看到同一份会话事实**:App 发起的会话 CLI 能 resume,终端跑一半的任务 App 能接手。
 - 数据目录 `~/.codesaber/`:sessions(JSONL 事件溯源)、config.toml、truncations/;凭据存 macOS Keychain(明文不落盘)。
 - 分发:CLI 走 brew(预编译二进制)/cargo;App 走 Developer ID 签名 + 公证 + Sparkle 自动更新。README 的 npm 表述随 M0-T8 同步修正为 brew/cargo(如后续需要 npm 渠道,再加 npm 包装层,非 M0 范围)。
@@ -100,14 +100,30 @@ codesaber/
 - 成本核算:provider usage 权威 + chars/4 估算 + 静态价格表(config);会话/日预算软告警。
 - v2:智能路由(便宜模型探路、贵模型决策)、models.dev 目录、订阅 OAuth。
 
-### 3.7 分层哲学与工作流包(2026-08-19 修订;2026-08-20 增补基座准入判据)
+### 3.7 分层哲学与工作流包(2026-08-19 立项;2026-08-20 经 codex-ask 挑战后 v3)
 
 **基座极简、够用、好用(pi 式);上层只建在被证明好用的基座上。极简的判据不是行数少,是每一行都难删。**
 
-- **基座边界**(crates/ 中的 protocol、core、tools、provider、sandbox、server、cli):基座自身 = 一个完整可用的 coding agent——**上层一行没写时,`saber` 裸跑就值得安装**;M1.5 的验收即基座的验收。
+- **基座边界**:基座自身 = 一个完整可用的 coding agent——**上层一行没写时,`saber` 裸跑就值得安装**;M1.5 的验收即基座的验收。基座 = crates/ 中承载**跨前端不变量**的部分(protocol、core、tools、provider、sandbox、cli);server 与 TUI 是传输/渲染 adapter(官方一等模块,但不因 crate 路径取得基座资格)。
 - **极简量化锚**:基座目标 **≤2 万行 Rust**(pi 核心 1.7 万行为同量级参照),超出即报警。
-- **内核准入三问**(任何向 crates/ 添加代码的变更):①为什么不能在扩展面实现?②删掉它基座还完整吗(答"还完整"即不该进内核)?③它是不是任何工作流都需要的(工作流包需要的,归工作流包)?
-- **扩展面只有四个**:Registry、Skills、hooks、冻结协议;上层(工作流包/App/jobs 完全体/MCP/子代理编排)禁止绕过扩展面直改内核。边界案例已裁定:MCP **客户端**进基座(任何工作流都需要),延迟加载策略只留缝。
+- **内核准入四问(按序,任何向 crates/ 添加代码的变更)**:①它是否承载跨前端、跨工作流的安全/持久化/取消/顺序/幂等不变量?是则机制进基座;②放上层后是否必须访问 core 私有状态、或每个扩展都要重复实现同一复杂逻辑?是则建小而深的基座接口;③这个接缝现在是否已有**两个真实消费者**或失败验收证明需要?否则不预建抽象;④裸 headless agent 是否因缺一个默认实现而无法通过门禁?是则随基座发行默认实现,仍允许替换。删除测试保留,但用于判**深度**:删除后复杂度散落到多个调用方→该留;复杂度直接消失→它多半是意见或转发层。
+- **扩展面(v3)**:**Typed Registries**(分册 Tool/Provider/ContextSource;Profile 等第二个真实消费者出现再引入,不做万能 Registry)· **Skills**(可发现、按需加载的知识正文,不持引擎状态)· **Hooks**(固定顺序/超时/失败语义,只在已声明的安全边缘阻断或改写,不承担 WAL/取消/compaction 状态迁移)· **协议扩展槽**(namespaced `ExtensionEvent/ExtensionState {namespace, version, payload}`,未知事件与未知字段必须可忽略;能力协商;通用反向 UI request/response 覆盖审批/提问/elicitation)。工具执行上下文统一提供 session_id、取消信号、workspace/路径策略、event sink——jobs、MCP、子代理工具不必绕过基座。
+- **能力裁定表(2026-08-20)**:
+
+| 能力 | 裁定 | 理由 |
+|---|---|---|
+| compaction | 执行与最小默认策略进基座;摘要 prompt/模型/阈值可替换 | 原子改变历史投影并决定 overflow 续跑,hook 无法安全拼接 |
+| 子代理 spawn | 子 session/权限收窄/取消/事件机制进基座;profile、Task 工具、swarm 编排上层 | 子代理=受约束的新 session;编排是工作流意见 |
+| token 计数 | 基座 | 驱动 max-output/compaction/预算与事件一致性 |
+| AGENTS.md 加载 | 基座 | 仓库指令是通用正确性输入,加载顺序必须唯一 |
+| prompt 组装器 | 组装机制基座;段落内容上层 | 一切注入必须经同一有序、缓存友好的接口 |
+| steering 队列 | 基座 | 改变 turn/step 顺序、工具批次与取消语义 |
+| 失败重试 | 安全边界与默认退避基座;failover 顺序可配置 | 只有引擎知道是否已产生 partial output/intent |
+| jobs 三件套 | 最小三件套随基座发行;通知/PTY/任务中心上层 | 长 build 是通用阻塞点;**dogfood 遥测复核:20 任务超时次数为 0 则回撤上层** |
+| MCP 客户端 | **上层**(官方一等模块);通用"可见工具快照"机制进基座 | 裸 agent 不依赖 MCP;动态工具暴露由 Registry 接缝提供(2026-08-20 改判,原判进基座系沿行业惯例开口子,与本节判据不自洽) |
+| checkpoint/rewind | 机制基座;TUI 手势上层 | **语义裁定:对话+文件同退;部分不可回退时显式报告,绝不静默覆盖或部分成功** |
+| worktree 管理 | 上层 Workspace adapter | 裸 agent 用 cwd 即完整;第二个执行后端出现前不冻结 Workspace trait |
+| TUI | 上层 | 只消费事件与命令,不拥有任何 session/工具事实 |
 
 **基座零产品意见(pi 精华),工作流是可卸载的上层内容**:
 
@@ -123,8 +139,8 @@ codesaber/
 ```
 
 - **引擎只提供工作流的机制,不内置工作流的内容**。draw/strike/sheathe 是官方默认工作流包(skill 实现的命令 + profile + plan 文件约定),用户可整体替换为自己的流程(TDD 式、瀑布式…);提示词里的"工作流宪法"一节随包加载、可卸载,基座提示词保持 pi 式极简。
-- plan-mode 机制(基座):只读工具白名单、`.codesaber/plans/<session>-<slug>.md`(frontmatter status:drawn/striking/shipped)、`exit_plan_mode` 式审批、工具目录跨模式不变以保请求缓存稳定。
-- **卸载即证明**:工作流包必须能被禁用后基座仍完整可用——这是"产品主张不污染基座"的验收标准(与 TB2.0 跑分互证:带包 vs 裸基座各测一轮)。
+- plan-mode 分层:基座只提供 session 级工具可见性切换、权限策略与审批原语;plan-mode **状态机与内容随工作流包**(`.codesaber/plans/<session>-<slug>.md`、frontmatter status、`exit_plan_mode` 审批流);工具目录跨模式不变以保请求缓存稳定。
+- **卸载即证明(v2)**:①禁用工作流包后,基座全部正确性/安全/性能门禁仍通过;②含包的旧 session 在无包环境仍可打开(未知 namespaced 状态被保留或安全忽略);③安装/卸载只改变注册项与资源,不改 core 源码、不残留 handler;④TB2.0 带包/裸基座分数**分开报告、不设分差上限**,裸基座保住绝对下限即可(原 ≤3% 分差上限取消——防"把包做弱保分差"的逆向激励)。
 
 ## 4. 前端与数据流
 
@@ -192,6 +208,25 @@ codesaber/
 内嵌 JS 插件运行时;Windows/Linux 沙箱(跨平台只留抽象缝隙);订阅 OAuth(MVP);云同步/团队协作;自训模型;**audio/video 多模态**。v2 再评估:Starlark 完整策略引擎、模型智能路由、WASM 插件 ABI、多机 attach、auto-memory(opt-in)。
 
 License:**Apache-2.0**——LICENSE 文件与 README 同步落地于 M0-T8(设计文档本身不构成授权)。App 最低系统版本:**macOS 14+**(SwiftUI Observation 基线)。
+
+### 5.4 基座十二道门禁(2026-08-20 增;上层代码开写前按序全部通过)
+
+| # | 门 | 内容 | 归属 |
+|---|---|---|---|
+| 1 | 边界门 | 固化裸基座能力清单与 crate 依赖方向;基座 LOC/公开接口/直接依赖报告(2 万行只报警);禁用 server/TUI/MCP/workflow 后 `saber exec` 仍能启动 | M0-T1 起持续 |
+| 2 | 最小竖切门 | 串行工具调度+精确唯一 edit+统一路径策略+Seatbelt+loop+headless;MockProvider 完成 read→edit→bash test→final | M0(T4-T7) |
+| 3 | 确定性 loop 门 | 正常 turn/length 拒执行/坏参数/工具失败/doom loop/用户取消全部锁定事件序列;零孤儿 tool result、零重复 tool call、零未解释终止 | M0-T5 |
+| 4 | 持久化崩溃门 | intent 前/intent fsync 后/副作用后/result 后四个时点 kill;恢复绝不重放有副作用调用;撕裂行可修;旧 schema fixture 迁移至少跑一次 | M0-T5 |
+| 5 | 安全门 | `..`/绝对路径/symlink/rename race/cwd 外写/敏感文件/env 泄露/网络全部注入,未授权写入与 secret 泄露为 0;Rust/Node/Python build 各跑通一条 | M0-T4/T4b |
+| 6 | 重试取消门 | 429/5xx/断连仅在首字节前重试;partial stream 绝不自动拼接;Abort 终止 provider/bash 子孙/job;孤儿进程为 0;job kill 幂等 | M1/M1.5 |
+| 7 | 上下文耐久门 | 同一任务连续 3 次压缩后约束/路径/未解决问题仍保留;配对损坏为 0;估算不得系统性低估反复撞 overflow | M1 |
+| 8 | steering/checkpoint 门 | steering 于请求中/工具执行中/批次末尾到达均一次、按序、在定义边界注入;rewind 遇用户并发修改冲突拒绝;对话+文件同退或显式报告 | M1 |
+| 9 | 协议门 | `--json` 每行可解析(stdout 纯度);断线于每类事件后均可经 revision/snapshot 恢复同一投影;测试客户端可忽略未知 extension event;schema 与 Rust 零漂移 | M1.5 |
+| 10 | 扩展接缝门 | 只在测试中实现一个**假扩展**:注册工具/增 ContextSource/执行 hook/写 namespaced state/发 UI request,全程不改 core;卸载无残留,旧 session 可开 | M1.5(先于真实工作流包) |
+| 11 | 黑盒能力门 | Harbor 固定 10 题可复现基线;M1.5 裸基座 TB2.0 ≥40%(固定模型/预算/timeout/attempts=3,报告成本耗时方差);脏工作区/非 git/超长输出/并发编辑进私有回归集 | M0/M1.5 |
+| 12 | dogfood 门 | ≥7 天/≥20 任务/≥3 仓库;≥90% 不换回其他 agent;误改/数据丢失/secret 泄露/孤儿进程为 0;每次换工具记录原因;**同一缺陷出现两次才有资格新增基座机制** | M1.5 |
+
+通过全部门禁后协议标 v1-rc,上层开写;最终 v1 在真实 Swift/独立 UDS 客户端完成握手/订阅/断线恢复/反向调用后冻结。
 
 ## 6. 参考实现映射(抄哪儿)
 

@@ -10,6 +10,7 @@
 3. 质量门禁全绿:workspace lints(deny unwrap/expect)+ `clippy -D warnings` + `cargo-deny`(单门禁:advisories/bans/licenses/sources;cargo-audit 维护者已退出,不采用)+ cargo-shear + insta 快照 + 依赖锁定;
 4. 协议 JSON Schema artifact 由 `cargo run -p saber-protocol --bin saber-export-schema` 显式生成并入库于 `schema/saber-protocol.json`(不走 build.rs——向源码树写产物是反模式);CI(PR+nightly)经 `committed_schema_artifact_is_current` 与本地引用闭包测试强制与 Rust 类型零漂移;
 5. mock provider 驱动的 loop 集成测试覆盖:正常 turn / length 拒执行 / doom-loop / 工具失败回错;
+   (M0 覆盖 spec §5.4 门禁 1-5 与 11 的基线部分;门禁映射为各任务验收,不另设流程);
 6. 边界测试:bash 写 cwd 之外被拒、网络被拒、`.ssh`/`.env` 读被拒、子进程 `env` 中无 `SABER_*`/密钥变量(环境白名单生效)、write/edit 越界路径被引擎拒绝。
 
 ## 环境前置
