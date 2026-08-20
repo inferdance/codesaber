@@ -1404,6 +1404,12 @@ dependencies = [
 [[package]]
 name = "saber-sandbox"
 version = "0.1.0"
+dependencies = [
+ "futures",
+ "saber-tools",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "saber-server"

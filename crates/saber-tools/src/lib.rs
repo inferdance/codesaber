@@ -92,6 +92,7 @@ pub struct ToolContext {
     pub policy: path_policy::PathPolicy,
     read_files: Mutex<HashSet<PathBuf>>,
     file_locks: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    sandbox_denials: Mutex<HashMap<String, u32>>,
 }
 
 impl ToolContext {
@@ -114,7 +115,21 @@ impl ToolContext {
             policy: path_policy::PathPolicy::new(cwd, data_dir)?,
             read_files: Mutex::new(HashSet::new()),
             file_locks: Mutex::new(HashMap::new()),
+            sandbox_denials: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Records a sandbox denial for a command and returns how many times
+    /// this exact command has been denied (for the stop-retry guidance).
+    pub fn record_sandbox_denial(&self, command: &str) -> u32 {
+        self.sandbox_denials
+            .lock()
+            .map(|mut denials| {
+                let count = denials.entry(command.to_owned()).or_insert(0);
+                *count += 1;
+                *count
+            })
+            .unwrap_or(1)
     }
 
     pub fn mark_read(&self, resolved: &Path) {

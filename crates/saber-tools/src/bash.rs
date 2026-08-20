@@ -34,6 +34,12 @@ const STREAM_WINDOW_BYTES: usize = 256 * 1024;
 /// Grace window for collectors after the child exits or is killed.
 const COLLECTOR_GRACE: Duration = Duration::from_secs(2);
 
+/// Contract marker executors emit when the sandbox denied part of a
+/// command (structured rejection note). The tool layer counts repeat
+/// fingerprints and escalates guidance instead of letting the model
+/// retry the same doomed approach.
+pub const SANDBOX_DENIAL_MARKER: &str = "[saber-sandbox: denied]";
+
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct BashParams {
     pub command: String,
@@ -239,52 +245,77 @@ where
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DirectExecutor;
 
-impl BashExecutor for DirectExecutor {
-    fn execute(
-        &self,
-        env: &BashEnv,
-        command: &str,
-        timeout: Duration,
-    ) -> BoxFuture<'static, Result<BashOutput, String>> {
-        let env = env.clone();
-        let command = command.to_owned();
-        Box::pin(async move {
-            // Spill initialization happens BEFORE spawn: no post-spawn
-            // setup failure can orphan a running child.
-            let spill_dir = spill_dir_for(&env.data_dir, &env.session_id);
-            std::fs::create_dir_all(&spill_dir).map_err(|e| format!("spill dir: {e}"))?;
-            let millis = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            let stdout_spill_path = spill_dir.join(format!("{millis}-bash-stdout.log"));
-            let stderr_spill_path = spill_dir.join(format!("{millis}-bash-stderr.log"));
-            // Pre-open both files; failure degrades to window-only mode
-            // instead of aborting (the command still runs and reports).
-            let stdout_spill_file = tokio::fs::File::create(&stdout_spill_path).await.ok();
-            let stderr_spill_file = tokio::fs::File::create(&stderr_spill_path).await.ok();
+/// Governance runner shared by every executor: env scrubbing, spill setup
+/// before spawn, process groups, bounded streaming collection, and the
+/// single-deadline kill path. Executors only decide the argv (direct bash,
+/// Seatbelt-wrapped, future backends).
+pub async fn run_with_governance(
+    argv: &[String],
+    env: &BashEnv,
+    timeout: Duration,
+    tool_label: &str,
+) -> Result<BashOutput, String> {
+    // Spill initialization happens BEFORE spawn: no post-spawn setup
+    // failure can orphan a running child.
+    let spill_dir = spill_dir_for(&env.data_dir, &env.session_id);
+    std::fs::create_dir_all(&spill_dir).map_err(|e| format!("spill dir: {e}"))?;
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let stdout_spill_path = spill_dir.join(format!("{millis}-{tool_label}-stdout.log"));
+    let stderr_spill_path = spill_dir.join(format!("{millis}-{tool_label}-stderr.log"));
+    // Pre-open both files; failure degrades to window-only mode instead of
+    // aborting (the command still runs and reports).
+    let stdout_spill_file = tokio::fs::File::create(&stdout_spill_path).await.ok();
+    let stderr_spill_file = tokio::fs::File::create(&stderr_spill_path).await.ok();
 
-            let mut cmd = tokio::process::Command::new("/bin/bash");
-            cmd.arg("-c").arg(&command).current_dir(&env.cwd);
-            // Scrub everything, then pass through only the allowlist —
-            // engine-held secrets must never reach subprocesses.
-            cmd.env_clear();
-            for var in CHILD_ENV_ALLOWLIST {
-                if let Ok(value) = std::env::var(var) {
-                    cmd.env(var, value);
-                }
-            }
-            cmd.stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            // New process group so timeout kill reaps grandchildren.
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                cmd.as_std_mut().process_group(0);
-            }
-            let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    let mut cmd = tokio::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]).current_dir(&env.cwd);
+    // Scrub everything, then pass through only the allowlist — engine-held
+    // secrets must never reach subprocesses.
+    cmd.env_clear();
+    for var in CHILD_ENV_ALLOWLIST {
+        if let Ok(value) = std::env::var(var) {
+            cmd.env(var, value);
+        }
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    // New process group so timeout kill reaps grandchildren.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.as_std_mut().process_group(0);
+    }
+    let child = cmd.spawn().map_err(|e| format!("spawn {}: {e}", argv[0]))?;
+    run_child_to_output(
+        child,
+        env,
+        timeout,
+        stdout_spill_path,
+        stderr_spill_path,
+        stdout_spill_file,
+        stderr_spill_file,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_child_to_output(
+    mut child: tokio::process::Child,
+    env: &BashEnv,
+    timeout: Duration,
+    stdout_spill_path: PathBuf,
+    stderr_spill_path: PathBuf,
+    stdout_spill_file: Option<tokio::fs::File>,
+    stderr_spill_file: Option<tokio::fs::File>,
+) -> Result<BashOutput, String> {
+    let _ = &env;
+    {
+        {
             let pid = child.id();
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
@@ -358,6 +389,22 @@ impl BashExecutor for DirectExecutor {
                 exit_code,
                 timed_out,
             })
+        }
+    }
+}
+
+impl BashExecutor for DirectExecutor {
+    fn execute(
+        &self,
+        env: &BashEnv,
+        command: &str,
+        timeout: Duration,
+    ) -> BoxFuture<'static, Result<BashOutput, String>> {
+        let env = env.clone();
+        let command = command.to_owned();
+        Box::pin(async move {
+            let argv = vec!["/bin/bash".to_owned(), "-c".to_owned(), command.clone()];
+            run_with_governance(&argv, &env, timeout, "bash").await
         })
     }
 }

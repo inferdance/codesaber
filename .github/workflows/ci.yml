@@ -53,3 +53,21 @@ jobs:
 
   # schema-sync lands with M0-T2 (saber-protocol JSON Schema artifacts);
   # macOS sandbox tests land with M0-T4b and get a macos-latest job then.
+
+  macos-sandbox:
+    name: seatbelt tests (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Sandbox tests
+        run: cargo nextest run -p saber-sandbox
