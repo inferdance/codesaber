@@ -12,14 +12,6 @@ use saber_tools::bash::{BashEnv, BashExecutor};
 use std::path::PathBuf;
 use std::time::Duration;
 
-fn env_for(temp: &tempfile::TempDir) -> BashEnv {
-    BashEnv {
-        cwd: temp.path().to_owned(),
-        data_dir: temp.path().join(".saber"),
-        session_id: "s-sb-test".to_owned(),
-    }
-}
-
 async fn run_at(workspace: &std::path::Path, command: &str) -> saber_tools::bash::BashOutput {
     let env = BashEnv {
         cwd: workspace.to_owned(),
