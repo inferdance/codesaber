@@ -1,0 +1,246 @@
+//! Session log with WAL semantics (M0-T5): append-only JSONL as the single
+//! source of truth. One line = one
+//! [`SessionEventEnvelope`][saber_protocol::SessionEventEnvelope]
+//! (`{"ts":..,"seq":..,"session_id":..,"type":..,"payload":{..}}`).
+//!
+//! Write-ahead rule: before a tool side effect runs, the engine durably
+//! appends a `tool_call` intent; the `tool_result` lands after the side
+//! effect completes. Recovery treats intent-without-result as an
+//! unfinished call — reported, never replayed.
+
+use saber_protocol::{SessionEvent, SessionEventEnvelope};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("corrupt session log at {path} line {line}: {reason}")]
+    Corrupt {
+        path: PathBuf,
+        line: usize,
+        reason: String,
+    },
+}
+
+/// Append-only JSONL session writer with WAL `fsync` for intents.
+pub struct SessionLog {
+    path: PathBuf,
+    session_id: String,
+    writer: Mutex<std::fs::File>,
+    seq: AtomicU64,
+}
+
+impl SessionLog {
+    /// Creates (or truncates) a session log; `meta` becomes line 1.
+    pub fn create(dir: &Path, session_id: &str, meta: SessionEvent) -> Result<Self, SessionError> {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(format!("{session_id}.jsonl"));
+        let writer = std::fs::File::create(&path)?;
+        let log = Self {
+            path,
+            session_id: session_id.to_owned(),
+            writer: Mutex::new(writer),
+            seq: AtomicU64::new(0),
+        };
+        log.append_inner(meta, false)?;
+        Ok(log)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Appends an event. `sync` = WAL boundary (tool intents).
+    pub fn append(&self, event: SessionEvent, sync: bool) -> Result<u64, SessionError> {
+        self.append_inner(event, sync)
+    }
+
+    fn append_inner(&self, event: SessionEvent, sync: bool) -> Result<u64, SessionError> {
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+        let envelope = SessionEventEnvelope {
+            ts: now_ms(),
+            seq,
+            session_id: self.session_id.clone(),
+            event,
+        };
+        let mut line = serde_json::to_string(&envelope).map_err(|e| SessionError::Corrupt {
+            path: self.path.clone(),
+            line: seq as usize,
+            reason: e.to_string(),
+        })?;
+        line.push('\n');
+        let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        writer.write_all(line.as_bytes())?;
+        if sync {
+            writer.sync_data()?;
+        }
+        Ok(seq)
+    }
+
+    /// Snapshot of the next sequence number (for tests/inspection).
+    pub fn next_seq(&self) -> u64 {
+        self.seq.load(Ordering::SeqCst)
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// A reconstructed session: every parsed event plus the unfinished tool
+/// calls (intent without result) found during recovery.
+#[derive(Debug)]
+pub struct Recovered {
+    pub events: Vec<SessionEventEnvelope>,
+    /// `seq` of tool_call intents whose results never landed.
+    pub unfinished_tool_calls: Vec<u64>,
+}
+
+/// Rebuilds a session from its JSONL log. Torn trailing lines (partial
+/// writes from a crash) are dropped; mid-file corruption is an error.
+pub fn recover(path: &Path) -> Result<Recovered, SessionError> {
+    let text = std::fs::read_to_string(path)?;
+    let mut events = Vec::new();
+    let mut lines = text.lines().enumerate().peekable();
+    while let Some((index, line)) = lines.next() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let is_last = lines.peek().is_none();
+        match serde_json::from_str::<SessionEventEnvelope>(line) {
+            Ok(envelope) => events.push(envelope),
+            Err(_) if is_last => {
+                // Torn tail from a crash mid-write: drop it.
+                break;
+            }
+            Err(e) => {
+                return Err(SessionError::Corrupt {
+                    path: path.to_owned(),
+                    line: index + 1,
+                    reason: e.to_string(),
+                });
+            }
+        }
+    }
+    let mut finished = std::collections::HashSet::new();
+    for event in &events {
+        if let SessionEvent::ToolResult { call_id, .. } = &event.event {
+            finished.insert(call_id.clone());
+        }
+    }
+    let unfinished_tool_calls = events
+        .iter()
+        .filter(|event| {
+            matches!(&event.event, SessionEvent::ToolCall { call_id, .. }
+                if !finished.contains(call_id))
+        })
+        .map(|event| event.seq)
+        .collect();
+    Ok(Recovered {
+        events,
+        unfinished_tool_calls,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta() -> SessionEvent {
+        SessionEvent::SessionMeta {
+            protocol_version: "0.1.0".into(),
+            engine_version: "0.1.0".into(),
+            cwd: "/tmp".into(),
+            model: None,
+        }
+    }
+
+    #[test]
+    fn wal_intent_and_result_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let log = SessionLog::create(dir.path(), "s-1", meta())?;
+        log.append(
+            SessionEvent::ToolCall {
+                call_id: "c1".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "touch x"}),
+            },
+            true,
+        )?;
+        log.append(
+            SessionEvent::ToolResult {
+                call_id: "c1".into(),
+                content: "done".into(),
+                is_error: false,
+            },
+            false,
+        )?;
+        let recovered = recover(log.path())?;
+        assert_eq!(recovered.events.len(), 3);
+        assert!(recovered.unfinished_tool_calls.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn intent_without_result_is_flagged_not_replayed() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let log = SessionLog::create(dir.path(), "s-2", meta()).unwrap_or_else(|e| panic!("{e}"));
+        let seq = log
+            .append(
+                SessionEvent::ToolCall {
+                    call_id: "c9".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "rm -rf /"}),
+                },
+                true,
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        let recovered = recover(log.path()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(recovered.unfinished_tool_calls, vec![seq]);
+    }
+
+    #[test]
+    fn torn_tail_is_dropped_midfile_corrupt_is_error() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let log = SessionLog::create(dir.path(), "s-3", meta()).unwrap_or_else(|e| panic!("{e}"));
+        log.append(
+            SessionEvent::UserMessage {
+                message: saber_protocol::Message {
+                    role: saber_protocol::Role::User,
+                    blocks: vec![saber_protocol::Block::Text { text: "hi".into() }],
+                },
+            },
+            false,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        // Simulate a torn tail: append half a JSON line.
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(log.path())
+                .unwrap_or_else(|e| panic!("{e}"));
+            file.write_all(b"{\"ts\":123")
+                .unwrap_or_else(|e| panic!("{e}"));
+        }
+        let recovered = recover(log.path()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(recovered.events.len(), 2, "torn tail must be dropped");
+
+        // Mid-file corruption stays an error.
+        let bad = dir.path().join("bad.jsonl");
+        std::fs::write(&bad, "{\"garbage\":true}\n{\"more\":1}\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(recover(&bad).is_err());
+    }
+}

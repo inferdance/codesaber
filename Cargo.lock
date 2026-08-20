@@ -1368,6 +1368,18 @@ dependencies = [
 [[package]]
 name = "saber-core"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "saber-protocol",
+ "saber-provider",
+ "saber-tools",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "saber-jobs"

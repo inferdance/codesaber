@@ -11,3 +11,15 @@ description = "Engine core: session manager (event-sourced JSONL with WAL semant
 workspace = true
 
 [dependencies]
+saber-protocol = { workspace = true }
+saber-provider = { workspace = true }
+saber-tools = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+anyhow = { workspace = true }
