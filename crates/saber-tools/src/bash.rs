@@ -262,8 +262,11 @@ impl BashExecutor for DirectExecutor {
             let (exit_code, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
                 Ok(status) => (status.map(|s| s.code()).unwrap_or(None), false),
                 Err(_) => {
-                    kill_process_group(pid);
-                    // Pipes reach EOF once the group dies; drain the windows.
+                    // Belt and braces: direct SIGKILL unblocks wait() on
+                    // every unix; the group kill then reaps grandchildren
+                    // (best-effort — the fault matrix owns verifying it).
+                    let _ = child.start_kill();
+                    kill_process_group(pid).await;
                     let status = child.wait().await;
                     (status.map(|s| s.code()).unwrap_or(None), true)
                 }
@@ -301,15 +304,17 @@ impl BashExecutor for DirectExecutor {
     }
 }
 
-fn kill_process_group(pid: Option<u32>) {
+async fn kill_process_group(pid: Option<u32>) {
     let Some(pid) = pid else { return };
-    // /bin/kill -9 -<pgid>: no unsafe, reaps the whole tree.
-    let _ = std::process::Command::new("/bin/kill")
+    // /bin/kill -9 -<pgid>: no unsafe, reaps the whole tree. Bounded so a
+    // broken kill binary can never stall the timeout path.
+    let group_kill = tokio::process::Command::new("/bin/kill")
         .arg("-9")
         .arg(format!("-{pid}"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+    let _ = tokio::time::timeout(Duration::from_secs(2), group_kill).await;
 }
 
 pub async fn run_bash(
