@@ -10,7 +10,6 @@ use saber_protocol::{Event, SessionEvent};
 use saber_provider::Provider;
 use saber_provider::anthropic::AnthropicConfig;
 use saber_provider::openai::OpenAiCompatConfig;
-use saber_tools::bash::DirectExecutor;
 use saber_tools::{Registry, ToolContext, builtin_tools};
 use std::path::PathBuf;
 use std::sync::Arc;
