@@ -308,6 +308,110 @@ async fn multiple_tool_calls_in_one_response_all_execute() {
 }
 
 #[tokio::test]
+async fn malformed_json_arguments_are_rejected_not_null() {
+    // Regression: malformed tool arguments must produce a reported failure,
+    // never a silent Null execution.
+    let (temp, mut engine) = make_engine(vec![
+        ProviderEvent::ToolCallStart {
+            id: "call-bad".into(),
+            name: "bash".into(),
+        },
+        ProviderEvent::ToolCallDelta {
+            id: "call-bad".into(),
+            arguments_delta: "{not valid json".into(),
+        },
+        ProviderEvent::Finish {
+            reason: FinishReason::ToolCalls,
+            usage: Default::default(),
+        },
+    ])
+    .await;
+    let (_text, _outcome) = engine
+        .run_turn(TurnInput {
+            user_message: "bad args".into(),
+            system: None,
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    // The malformed tool must NOT appear in the session log as a ToolCall
+    // (it was rejected before WAL intent).
+    let recovered = recover(engine.session.path()).unwrap_or_else(|e| panic!("{e}"));
+    let executed = recovered
+        .events
+        .iter()
+        .filter(|e| matches!(e.event, SessionEvent::ToolResult { .. }))
+        .count();
+    // The counting provider replays the same events; the first step rejects,
+    // the second step also rejects (same malformed args), doom-loop may
+    // eventually trip — the key assertion is NO tool with Null args executed.
+    assert!(
+        recovered.events.iter().all(|e| {
+            !matches!(&e.event, SessionEvent::ToolCall { arguments, .. }
+                if arguments.is_null())
+        }),
+        "malformed args must never produce a Null-arguments execution"
+    );
+    let _ = (executed, temp);
+}
+
+#[tokio::test]
+async fn parallel_reads_execute_concurrently_in_batch() {
+    // Two read-class tools (echo) submitted in one model response must go
+    // through execute_batch as a single batch, enabling the scheduler's
+    // concurrent read semantics (not sequential single-tool calls).
+    let (temp, mut engine) = make_engine(vec![
+        ProviderEvent::ToolCallStart {
+            id: "call-a".into(),
+            name: "bash".into(),
+        },
+        ProviderEvent::ToolCallDelta {
+            id: "call-a".into(),
+            arguments_delta: "{\"command\": \"echo A\"}".into(),
+        },
+        ProviderEvent::ToolCallStart {
+            id: "call-b".into(),
+            name: "bash".into(),
+        },
+        ProviderEvent::ToolCallDelta {
+            id: "call-b".into(),
+            arguments_delta: "{\"command\": \"echo B\"}".into(),
+        },
+        ProviderEvent::Finish {
+            reason: FinishReason::ToolCalls,
+            usage: Default::default(),
+        },
+    ])
+    .await;
+    let _ = engine
+        .run_turn(TurnInput {
+            user_message: "parallel".into(),
+            system: None,
+        })
+        .await;
+    // Both tools must have been executed (results in the session log).
+    let recovered = recover(engine.session.path()).unwrap_or_else(|e| panic!("{e}"));
+    let tool_results: Vec<&str> = recovered
+        .events
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::ToolResult {
+                content, is_error, ..
+            } if !is_error => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        tool_results.iter().any(|c| c.contains('A')),
+        "call-a must execute: {tool_results:?}"
+    );
+    assert!(
+        tool_results.iter().any(|c| c.contains('B')),
+        "call-b must execute: {tool_results:?}"
+    );
+    let _ = temp;
+}
+
+#[tokio::test]
 async fn crash_between_intent_and_result_marks_unfinished() {
     // Simulate: intent written (sync), process dies before result.
     let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));

@@ -244,8 +244,19 @@ impl Engine {
 
             for id in call_order {
                 if let Some((name, args)) = active_calls.remove(&id) {
-                    let parsed = serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
-                    tool_calls.push((id, name, parsed));
+                    match serde_json::from_str(&args) {
+                        Ok(parsed) => tool_calls.push((id, name, parsed)),
+                        Err(e) => {
+                            // Malformed arguments are a reported failure,
+                            // never a silent Null execution.
+                            self.emit(EventMsg::Error {
+                                message: format!(
+                                    "tool `{name}` produced malformed JSON arguments: {e}; refusing to execute"
+                                ),
+                                recoverable: true,
+                            });
+                        }
+                    }
                 }
             }
 
@@ -399,11 +410,11 @@ impl Engine {
         step_id: &str,
         calls: Vec<(String, String, serde_json::Value)>,
     ) -> Vec<(String, ToolResult)> {
-        let mut results = Vec::with_capacity(calls.len());
+        // Phase 1: write ALL WAL intents first (durable, fsync) — a failure
+        // blocks that specific tool's execution but not the batch.
+        let mut executable: Vec<(String, (String, serde_json::Value))> = Vec::new();
+        let mut results: Vec<(String, ToolResult)> = Vec::with_capacity(calls.len());
         for (call_id, name, arguments) in calls {
-            // WAL intent: durable BEFORE the side effect. A failed write
-            // (ENOSPC/EIO/sync) MUST block execution — the whole point of
-            // the WAL is that every side effect has a recoverable intent.
             if let Err(e) = self.session.append(
                 SessionEvent::ToolCall {
                     call_id: call_id.clone(),
@@ -426,12 +437,23 @@ impl Engine {
                 call_id: call_id.clone(),
                 name: name.clone(),
             });
-            let result = self
-                .registry
-                .execute_batch(self.tool_context.clone(), vec![(name, arguments)])
-                .await
-                .pop()
-                .unwrap_or(ToolResult::error("no result".into()));
+            executable.push((call_id, (name, arguments)));
+        }
+
+        // Phase 2: submit ALL tools as one batch to the scheduler —
+        // read-class tools run concurrently, exclusive tools serialize.
+        // This preserves the registry's resource-conflict semantics.
+        let batch: Vec<(String, serde_json::Value)> = executable
+            .iter()
+            .map(|(_, (name, arguments))| (name.clone(), arguments.clone()))
+            .collect();
+        let batch_results = self
+            .registry
+            .execute_batch(self.tool_context.clone(), batch)
+            .await;
+
+        // Phase 3: write results + emit completion in original call order.
+        for ((call_id, _), result) in executable.iter().zip(batch_results) {
             if let Err(e) = self.session.append(
                 SessionEvent::ToolResult {
                     call_id: call_id.clone(),
@@ -440,8 +462,6 @@ impl Engine {
                 },
                 false,
             ) {
-                // Result write failure is surfaced but does not block the
-                // response — the side effect already happened.
                 self.emit(EventMsg::Error {
                     message: format!("session result write failed: {e}"),
                     recoverable: true,
@@ -454,7 +474,7 @@ impl Engine {
                     .is_error
                     .then(|| result.content.chars().take(500).collect::<String>()),
             });
-            results.push((call_id, result));
+            results.push((call_id.clone(), result));
         }
         results
     }
