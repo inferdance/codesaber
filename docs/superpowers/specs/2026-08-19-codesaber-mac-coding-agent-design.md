@@ -162,9 +162,10 @@ codesaber/
 
 ### 5.2 里程碑
 
-- **M0 引擎骨架**:workspace + protocol + provider 两家(OpenAI 兼容 + Anthropic)+ loop + 6 工具 + JSONL 会话(WAL 语义)+ **最小 Seatbelt 沙箱(写边界+禁网+子进程环境白名单)**;`saber exec` 完成"读→改→跑测试";质量门禁全套上线(lints/cargo-deny/insta)。验收:Harbor 10 题基线分。
-- **M1 可用 CLI**:TUI + steering + 权限三档 + compaction 两层 + resume + headless(`--output-schema <path>` 结构化输出)+ 第三家 provider(Ollama)+ **failover** + **`saber replay` 回放器** + OTel trace。验收:日常自用一天不打断;夜间回归无退化。
-- **M2 Mac App**:saber-server 常驻 + Swift 协议生成 + App 四区 + worktree 并行会话 + 通知 + **协议 v1 冻结(兼容性进 CI)** + `read_image`/App 粘贴图片。验收:App 与 CLI 互通同一会话;签名公证发布;**Terminal-Bench 2.0 ≥40%**。
+- **M0 引擎骨架**:workspace + protocol + provider 两家(OpenAI 兼容 + Anthropic)+ loop + 6 工具 + JSONL 会话(WAL 语义)+ **最小 Seatbelt 沙箱(写边界+禁网+子进程环境白名单+deny-read 扩充至 ~/.aws、~/.gnupg、~/.kube 与 Keychain CLI)** + **沙箱拒绝的结构化输出**(模型可理解的"路径不可写,请……"提示,防重试死循环);`saber exec` 完成"读→改→跑测试";质量门禁全套上线(lints/cargo-deny/insta)。验收:Harbor 10 题基线分。
+- **M1 可用 CLI**:TUI + steering + 权限三档(**full 档零摩擦:一次设置永不打扰;审批 UI 降级为 headless 可配置规则,不阻塞**) + 模式×规则语义(模式是规则空间的基底,非叠加硬开关)+ 最小域白名单直连(防 M0 禁网与 M3 egress proxy 之间的全有或全无空窗)+ compaction 两层 + resume + headless(`--output-schema <path>` 结构化输出;ask→deny 报错自带可操作的规则配置提示)+ 第三家 provider(Ollama)+ **failover** + **`saber replay` 回放器** + OTel trace。验收:日常自用一天不打断;夜间回归无退化。
+- **M1.5 核心打磨(先于一切 GUI)**:dogfooding——本人以 saber 为日常主力工具连续一周;prompt/工具描述/容错链迭代全部由 Harbor 跑分驱动;compaction/steering/重试实战调优;**协议 v1 冻结(兼容性进 CI)——核心稳定即协议稳定,App 作为第一个外部消费者吃冻结版**。验收:**Terminal-Bench 2.0 ≥40%**;夜间回归零退化;full 档下主观体验"感觉不到权限系统存在"。
+- **M2 Mac App(前置条件:M1.5 验收通过)**:saber-server 常驻 + Swift 协议生成 + App 四区 + worktree 并行会话 + 通知 + `read_image`/App 粘贴图片。验收:App 与 CLI 互通同一会话;签名公证发布。
 - **M3 差异化纵深**:默认工作流包(draw/strike/sheathe,以 skills+plan-mode+profile 实现,可卸载)+ jobs + MCP(延迟加载默认)+ Skills(SKILL.md 双通道)+ 成本看板 + egress proxy + App inspector tab + hooks(exec 式六事件)。验收:**Terminal-Bench 2.0 ≥55%**;App 内完成一次并行双会话真实任务;**禁用工作流包后基座完整可用,TB2.0 对照分差 ≤3%**。
 
 ### 5.3 明确不做(YAGNI)
