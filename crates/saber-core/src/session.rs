@@ -43,8 +43,6 @@ impl SessionLog {
         let next_seq = recovered.events.last().map(|e| e.seq + 1).unwrap_or(0);
         // Truncate any torn tail so appends never create mid-file
         // corruption. The last complete event's byte offset is the new EOF.
-        let last_complete_offset = recovered.events.last().map(|_| ()).unwrap_or(());
-        let _ = last_complete_offset;
         // Re-read raw bytes and find the offset after the last complete line.
         let raw = std::fs::read(path)?;
         let mut clean_end = raw.len();
