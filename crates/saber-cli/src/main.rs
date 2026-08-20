@@ -4,13 +4,13 @@
 //! M0 delivers `saber exec -p "..." [--json] [--model M]` — the CI/Harbor/
 //! scripting entry point — plus `saber debug sandbox` and `saber doctor`.
 
-use saber_core::session::{SessionError, SessionLog};
+use saber_core::session::SessionLog;
 use saber_core::{Engine, TurnInput, TurnOutcome, assemble_system_prompt};
-use saber_protocol::{Event, EventMsg, SessionEvent};
+use saber_protocol::{Event, SessionEvent};
 use saber_provider::Provider;
 use saber_provider::anthropic::AnthropicConfig;
 use saber_provider::openai::OpenAiCompatConfig;
-use saber_tools::bash::{BashExecutor, DirectExecutor};
+use saber_tools::bash::DirectExecutor;
 use saber_tools::{Registry, ToolContext, builtin_tools};
 use std::path::PathBuf;
 use std::sync::Arc;
