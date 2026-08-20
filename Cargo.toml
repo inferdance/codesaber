@@ -26,6 +26,7 @@ saber-protocol = { path = "crates/saber-protocol", version = "0.1.0" }
 saber-core = { path = "crates/saber-core", version = "0.1.0" }
 saber-tools = { path = "crates/saber-tools", version = "0.1.0" }
 saber-provider = { path = "crates/saber-provider", version = "0.1.0" }
+saber-sandbox = { path = "crates/saber-sandbox", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"

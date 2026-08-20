@@ -35,7 +35,7 @@ one clean cut over a thousand scattered edits.
 
 ## 🚀 Quick Start
 
-> 🔨 Under active forging. The blade is being tempered.
+> 🔨 M0 engine complete: 117 tests, CI green.
 
 ```bash
 # Coming soon

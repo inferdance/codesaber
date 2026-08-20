@@ -1356,6 +1356,11 @@ version = "0.1.0"
 dependencies = [
  "saber-core",
  "saber-protocol",
+ "saber-provider",
+ "saber-sandbox",
+ "saber-tools",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
