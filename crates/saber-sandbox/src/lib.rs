@@ -54,7 +54,9 @@ pub fn build_profile(cwd: &Path, data_dir: &Path, home: &Path) -> Result<String,
     // Workspace secret globs derived from the unified suffix list:
     // <cwd>/**<suffix> for every secret suffix.
     for suffix in saber_tools::path_policy::SECRET_SUFFIXES {
-        let pattern = format!("[^/]*{}$", regex_escape(suffix));
+        // Match both `name` (exact) and `name...` (prefix, e.g.
+        // `.env.production`, `id_rsa.backup`).
+        let pattern = format!("[^/]*{}[^/]*$", regex_escape(suffix));
         denies.push(format!(
             "(deny file-read* (regex #\"^{}/{}{}\"))",
             regex_escape(&cwd.display().to_string()),

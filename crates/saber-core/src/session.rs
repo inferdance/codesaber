@@ -35,6 +35,26 @@ pub struct SessionLog {
 }
 
 impl SessionLog {
+    /// Opens an existing session log in append mode, rebuilding the
+    /// sequence counter from the recovered events. Fails if the log does
+    /// not exist (use [`SessionLog::create`] for new sessions).
+    pub fn open_append(path: &Path) -> Result<Self, SessionError> {
+        let recovered = recover(path)?;
+        let next_seq = recovered.events.last().map(|e| e.seq + 1).unwrap_or(0);
+        let writer = std::fs::OpenOptions::new().append(true).open(path)?;
+        let session_id = recovered
+            .events
+            .first()
+            .map(|e| e.session_id.clone())
+            .unwrap_or_default();
+        Ok(Self {
+            path: path.to_owned(),
+            session_id,
+            writer: Mutex::new(writer),
+            seq: AtomicU64::new(next_seq),
+        })
+    }
+
     /// Creates (or truncates) a session log; `meta` becomes line 1.
     pub fn create(dir: &Path, session_id: &str, meta: SessionEvent) -> Result<Self, SessionError> {
         std::fs::create_dir_all(dir)?;
@@ -208,6 +228,41 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"));
         let recovered = recover(log.path()).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(recovered.unfinished_tool_calls, vec![seq]);
+    }
+
+    #[test]
+    fn open_append_continues_sequence() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let log =
+            SessionLog::create(dir.path(), "s-resume", meta()).unwrap_or_else(|e| panic!("{e}"));
+        log.append(
+            SessionEvent::UserMessage {
+                message: saber_protocol::Message {
+                    role: saber_protocol::Role::User,
+                    blocks: vec![saber_protocol::Block::Text {
+                        text: "first".into(),
+                    }],
+                },
+            },
+            false,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        drop(log);
+
+        let path = dir.path().join("s-resume.jsonl");
+        let resumed = SessionLog::open_append(&path).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(resumed.session_id(), "s-resume");
+        let seq = resumed
+            .append(
+                SessionEvent::Error {
+                    message: "resumed".into(),
+                },
+                false,
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(seq, 2, "sequence must continue from recovery");
+        let recovered = recover(&path).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(recovered.events.len(), 3);
     }
 
     #[test]

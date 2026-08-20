@@ -244,6 +244,70 @@ async fn steering_messages_are_delivered_before_next_request() {
 }
 
 #[tokio::test]
+async fn multiple_tool_calls_in_one_response_all_execute() {
+    // Regression: the loop previously dropped all but the last tool call.
+    let (temp, mut engine) = make_engine(vec![
+        ProviderEvent::ToolCallStart {
+            id: "call-a".into(),
+            name: "bash".into(),
+        },
+        ProviderEvent::ToolCallDelta {
+            id: "call-a".into(),
+            arguments_delta: "{\"command\": \"echo A\"}".into(),
+        },
+        ProviderEvent::ToolCallStart {
+            id: "call-b".into(),
+            name: "bash".into(),
+        },
+        ProviderEvent::ToolCallDelta {
+            id: "call-b".into(),
+            arguments_delta: "{\"command\": \"echo B\"}".into(),
+        },
+        ProviderEvent::Finish {
+            reason: FinishReason::ToolCalls,
+            usage: Default::default(),
+        },
+    ])
+    .await;
+    // The counting provider replays the same events each call; the second
+    // step (after tool results) will have the same multi-call events but
+    // different content in results → doom loop should not trip since the
+    // model's calls differ from a repeat (the first-call check uses the
+    // step's first tool). Instead, the step-2 tool results will differ from
+    // step-1's, so doom_tracker resets. We just verify both calls executed.
+    let _ = engine
+        .run_turn(TurnInput {
+            user_message: "multi".into(),
+            system: None,
+        })
+        .await;
+
+    let recovered = recover(engine.session.path()).unwrap_or_else(|e| panic!("{e}"));
+    let executed: Vec<&str> = recovered
+        .events
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::ToolResult {
+                call_id,
+                content,
+                is_error,
+            } if !is_error => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    // First step must have executed both A and B (before any repeats).
+    assert!(
+        executed.iter().any(|c| c.contains('A')),
+        "call-a result must exist: {executed:?}"
+    );
+    assert!(
+        executed.iter().any(|c| c.contains('B')),
+        "call-b result must exist: {executed:?}"
+    );
+    let _ = temp;
+}
+
+#[tokio::test]
 async fn crash_between_intent_and_result_marks_unfinished() {
     // Simulate: intent written (sync), process dies before result.
     let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));

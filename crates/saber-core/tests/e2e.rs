@@ -108,7 +108,7 @@ async fn engine_with(steps: Vec<Vec<ProviderEvent>>) -> (Fixture, Engine) {
     .unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(
         temp.path().join("greet.test.js"),
-        "const { greet } = require('./greet');\nconst assert = require('assert');\nassert.strictEqual(greet('saber'), 'hello saber');\nconsole.log('TEST-OK');\n",
+        "const { greet } = require('./greet');\nconst assert = require('assert');\nassert.strictEqual(greet('saber'), 'hello saber!');\nconsole.log('TEST-OK');\n",
     )
     .unwrap_or_else(|e| panic!("{e}"));
 
@@ -172,7 +172,7 @@ async fn full_read_edit_test_final_flow() -> Result<(), Box<dyn std::error::Erro
             args_delta("{\"path\": \"greet.js\", \"old_string\": \"return 'hello ' + name;\", \"new_string\": \"return 'hello ' + name + '!';\"}"),
             finish_tool_calls(),
         ],
-        // Step 3: run the test.
+        // Step 3: run the test (must actually pass after the edit).
         vec![
             tool_call("call-1", "bash", serde_json::json!({})),
             args_delta("{\"command\": \"node greet.test.js\"}"),

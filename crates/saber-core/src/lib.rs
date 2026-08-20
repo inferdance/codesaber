@@ -177,7 +177,11 @@ impl Engine {
             let mut text = String::new();
             let mut thinking = String::new();
             let mut tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
-            let mut active_call: Option<(String, String, String)> = None;
+            // Per-call-id accumulation: a single response may carry many
+            // tool calls, and none of them may be silently dropped.
+            let mut active_calls: std::collections::BTreeMap<String, (String, String)> =
+                std::collections::BTreeMap::new();
+            let mut call_order: Vec<String> = Vec::new();
             let mut finish_reason = FinishReason::Stop;
             let mut step_usage = Usage::default();
 
@@ -198,16 +202,19 @@ impl Engine {
                         thinking.push_str(&text_delta);
                     }
                     ProviderEvent::ToolCallStart { id, name } => {
-                        active_call = Some((id, name, String::new()));
+                        if !active_calls.contains_key(&id) {
+                            call_order.push(id.clone());
+                        }
+                        active_calls
+                            .entry(id)
+                            .or_insert_with(|| (name, String::new()));
                     }
                     ProviderEvent::ToolCallDelta {
                         id,
                         arguments_delta,
                     } => {
-                        if let Some(call) = active_call.as_mut() {
-                            if call.0 == id {
-                                call.2.push_str(&arguments_delta);
-                            }
+                        if let Some((_, args)) = active_calls.get_mut(&id) {
+                            args.push_str(&arguments_delta);
                         }
                     }
                     ProviderEvent::Finish { reason, usage } => {
@@ -233,9 +240,11 @@ impl Engine {
                 return Ok((text, TurnOutcome::DoomLoop("provider error".into())));
             }
 
-            if let Some((id, name, args)) = active_call.take() {
-                let parsed = serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
-                tool_calls.push((id, name, parsed));
+            for id in call_order {
+                if let Some((name, args)) = active_calls.remove(&id) {
+                    let parsed = serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
+                    tool_calls.push((id, name, parsed));
+                }
             }
 
             self.usage_total.input_tokens += step_usage.input_tokens;
@@ -385,15 +394,25 @@ impl Engine {
     ) -> Vec<(String, ToolResult)> {
         let mut results = Vec::with_capacity(calls.len());
         for (call_id, name, arguments) in calls {
-            // WAL intent: durable BEFORE the side effect.
-            let _ = self.session.append(
+            // WAL intent: durable BEFORE the side effect. A failed write
+            // (ENOSPC/EIO/sync) MUST block execution — the whole point of
+            // the WAL is that every side effect has a recoverable intent.
+            if let Err(e) = self.session.append(
                 SessionEvent::ToolCall {
                     call_id: call_id.clone(),
                     name: name.clone(),
                     arguments: arguments.clone(),
                 },
                 true,
-            );
+            ) {
+                results.push((
+                    call_id,
+                    ToolResult::error(format!(
+                        "WAL intent write failed; execution blocked for safety: {e}"
+                    )),
+                ));
+                continue;
+            }
             self.emit(EventMsg::ToolStarted {
                 turn_id: turn_id.to_owned(),
                 step_id: step_id.to_owned(),

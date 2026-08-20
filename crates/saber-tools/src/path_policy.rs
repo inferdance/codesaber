@@ -165,7 +165,7 @@ impl PathPolicy {
         }
         if let Some(name) = candidate.file_name().and_then(|n| n.to_str()) {
             for suffix in &self.denied_read_suffixes {
-                if name.ends_with(suffix.as_str()) {
+                if name.starts_with(suffix.as_str()) || name.ends_with(suffix.as_str()) {
                     return Some("secret file pattern".into());
                 }
             }
