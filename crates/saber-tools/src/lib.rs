@@ -92,7 +92,9 @@ pub struct ToolContext {
     pub policy: path_policy::PathPolicy,
     read_files: Mutex<HashSet<PathBuf>>,
     file_locks: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
-    sandbox_denials: Mutex<HashMap<String, u32>>,
+    /// Last denial fingerprint + consecutive occurrences (reset on any
+    /// non-denied command) — drives the stop-retry escalation.
+    last_denial: Mutex<(String, u32)>,
 }
 
 impl ToolContext {
@@ -115,21 +117,32 @@ impl ToolContext {
             policy: path_policy::PathPolicy::new(cwd, data_dir)?,
             read_files: Mutex::new(HashSet::new()),
             file_locks: Mutex::new(HashMap::new()),
-            sandbox_denials: Mutex::new(HashMap::new()),
+            last_denial: Mutex::new((String::new(), 0)),
         })
     }
 
-    /// Records a sandbox denial for a command and returns how many times
-    /// this exact command has been denied (for the stop-retry guidance).
+    /// Records a sandbox denial for a command and returns the consecutive
+    /// occurrence count for this fingerprint. A different command (or any
+    /// successful run via [`reset_denials`]) resets the streak.
     pub fn record_sandbox_denial(&self, command: &str) -> u32 {
-        self.sandbox_denials
+        self.last_denial
             .lock()
-            .map(|mut denials| {
-                let count = denials.entry(command.to_owned()).or_insert(0);
-                *count += 1;
-                *count
+            .map(|mut last| {
+                if last.0 == command {
+                    last.1 += 1;
+                } else {
+                    *last = (command.to_owned(), 1);
+                }
+                last.1
             })
             .unwrap_or(1)
+    }
+
+    /// Resets the consecutive-denial streak (call on every clean run).
+    pub fn reset_denials(&self) {
+        if let Ok(mut last) = self.last_denial.lock() {
+            *last = (String::new(), 0);
+        }
     }
 
     pub fn mark_read(&self, resolved: &Path) {
@@ -473,8 +486,12 @@ mod tests {
     use super::*;
 
     fn registry() -> Registry {
+        registry_with(Arc::new(bash::DirectExecutor))
+    }
+
+    fn registry_with(executor: Arc<dyn bash::BashExecutor>) -> Registry {
         let mut registry = Registry::new();
-        for tool in builtin_tools(Arc::new(bash::DirectExecutor)) {
+        for tool in builtin_tools(executor) {
             registry.register(tool);
         }
         registry
@@ -674,6 +691,91 @@ mod tests {
             "{}",
             results[0].content
         );
+    }
+
+    #[tokio::test]
+    async fn consecutive_same_denials_escalate_and_success_resets() {
+        use crate::bash::BashEnv;
+        use futures::future::BoxFuture;
+        use std::time::Duration;
+
+        #[derive(Debug, Clone, Copy)]
+        struct DenyingExecutor;
+        impl crate::bash::BashExecutor for DenyingExecutor {
+            fn execute(
+                &self,
+                _env: &BashEnv,
+                command: &str,
+                _timeout: Duration,
+            ) -> BoxFuture<'static, Result<crate::bash::BashOutput, String>> {
+                let command = command.to_owned();
+                Box::pin(async move {
+                    let mut output = crate::bash::BashOutput {
+                        stdout: Default::default(),
+                        stderr: Default::default(),
+                        exit_code: Some(1),
+                        timed_out: false,
+                    };
+                    if command.contains("blocked") {
+                        output.stderr.head = format!(
+                            "cat: blocked: Operation not permitted\n{}",
+                            crate::bash::SANDBOX_DENIAL_MARKER
+                        );
+                        output.stderr.total_bytes = output.stderr.head.len() as u64;
+                    } else {
+                        output.stdout.head = "fine".into();
+                        output.stdout.total_bytes = output.stdout.head.len() as u64;
+                    }
+                    Ok(output)
+                })
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let registry = registry_with(Arc::new(DenyingExecutor));
+        let ctx = context(&temp);
+        let denied_cmd = serde_json::json!({"command": "cat blocked-file"});
+        let clean_cmd = serde_json::json!({"command": "echo fine"});
+
+        let first = registry
+            .execute_batch(ctx.clone(), vec![("bash".into(), denied_cmd.clone())])
+            .await;
+        assert!(!first[0].is_error);
+        assert!(
+            !first[0].content.contains("stop retrying"),
+            "first denial must not escalate"
+        );
+
+        let second = registry
+            .execute_batch(ctx.clone(), vec![("bash".into(), denied_cmd.clone())])
+            .await;
+        assert!(
+            second[0].content.contains("stop retrying"),
+            "second consecutive denial must escalate: {}",
+            second[0].content
+        );
+
+        // A clean run resets the streak.
+        let clean = registry
+            .execute_batch(ctx.clone(), vec![("bash".into(), clean_cmd)])
+            .await;
+        assert!(clean[0].content.contains("fine"));
+
+        let after_reset = registry
+            .execute_batch(ctx.clone(), vec![("bash".into(), denied_cmd.clone())])
+            .await;
+        assert!(
+            !after_reset[0].content.contains("stop retrying"),
+            "streak must reset after success: {}",
+            after_reset[0].content
+        );
+
+        // A different denied command starts a fresh streak.
+        let other = serde_json::json!({"command": "curl blocked-url"});
+        let once = registry
+            .execute_batch(ctx.clone(), vec![("bash".into(), other)])
+            .await;
+        assert!(!once[0].content.contains("stop retrying"));
     }
 
     #[tokio::test]

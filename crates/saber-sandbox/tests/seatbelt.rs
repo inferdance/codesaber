@@ -113,6 +113,80 @@ async fn env_holds_no_engine_secrets() {
     }
 }
 
+#[tokio::test]
+async fn nested_pem_and_prefixed_env_are_denied() {
+    let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir_all(temp.path().join("certs")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(temp.path().join("certs/server.pem"), "KEY").unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(temp.path().join("prod.env"), "TOKEN=1").unwrap_or_else(|e| panic!("{e}"));
+    let out = run(&temp, "cat certs/server.pem prod.env").await;
+    assert!(denied(&out), "expected secret denial: {}", out.render());
+    assert!(!out.stdout.head.contains("KEY"));
+    assert!(!out.stdout.head.contains("TOKEN=1"));
+}
+
+#[tokio::test]
+async fn special_char_workspace_names_still_deny_secrets() {
+    // `+`, brackets, parens are legal path chars and regex metacharacters.
+    let base = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let weird = base.path().join("a+b[c](d)");
+    std::fs::create_dir_all(&weird).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(weird.join(".env"), "SECRET=1").unwrap_or_else(|e| panic!("{e}"));
+    let executor = SeatbeltExecutor::new(SandboxConfig {
+        extra_writable_roots: Vec::new(),
+    });
+    let env = BashEnv {
+        cwd: weird.clone(),
+        data_dir: weird.join(".saber"),
+        session_id: "s-weird".to_owned(),
+    };
+    let out = executor
+        .execute(&env, "cat .env", Duration::from_secs(30))
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(
+        denied(&out),
+        "denial must survive special chars: {}",
+        out.render()
+    );
+    assert!(!out.stdout.head.contains("SECRET=1"));
+}
+
+#[tokio::test]
+async fn system_tmp_write_is_denied() {
+    let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let out = run(
+        &temp,
+        "touch /private/tmp/saber-escape-test 2>/dev/null; echo rc=$?",
+    )
+    .await;
+    // The touch itself must fail (denied) even if the message lands in stdout.
+    assert!(
+        denied(&out) || !out.stdout.head.contains("rc=0"),
+        "system /tmp must not be writable: {}",
+        out.render()
+    );
+    assert!(
+        !std::path::Path::new("/private/tmp/saber-escape-test").exists(),
+        "escape file must not exist"
+    );
+}
+
+#[tokio::test]
+async fn tools_using_tmpdir_still_work() {
+    // TMPDIR is redirected into the data dir; toolchains must keep working.
+    let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let script = "echo data > \"$TMPDIR/saber-tmp-check\" && cat \"$TMPDIR/saber-tmp-check\"";
+    let out = run(&temp, script).await;
+    assert_eq!(
+        out.exit_code,
+        Some(0),
+        "TMPDIR writes must pass: {}",
+        out.render()
+    );
+    assert!(out.stdout.head.contains("data"), "{}", out.stdout.head);
+}
+
 // --- Positive pass-through (must work) ---------------------------------
 
 #[tokio::test]
@@ -129,36 +203,60 @@ async fn plain_commands_and_workspace_writes_work() {
 }
 
 #[tokio::test]
-async fn python_one_liner_works() {
+async fn python_unittest_runner_works() {
     let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    let out = run(&temp, "python3 -c 'print(6*7)'").await;
-    assert_eq!(out.exit_code, Some(0), "{}", out.render());
-    assert!(out.stdout.head.contains("42"), "{}", out.stdout.head);
-}
-
-#[tokio::test]
-async fn node_one_liner_works() {
-    let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    let out = run(&temp, "node -e 'console.log(6*7)'").await;
-    assert_eq!(out.exit_code, Some(0), "{}", out.render());
-    assert!(out.stdout.head.contains("42"), "{}", out.stdout.head);
-}
-
-#[tokio::test]
-async fn rust_cargo_build_works_offline() {
-    let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-    let out = run(
-        &temp,
-        "cargo init --name sbtest -q . && cargo build --offline -q",
+    std::fs::write(
+        temp.path().join("test_math.py"),
+        "import unittest\nclass T(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(1 + 1, 2)\n",
     )
-    .await;
-    assert_eq!(
-        out.exit_code,
-        Some(0),
-        "rust build must pass: {}",
-        out.render()
+    .unwrap_or_else(|e| panic!("{e}"));
+    let out = run(&temp, "python3 -m unittest test_math -v").await;
+    let rendered = out.render();
+    assert_eq!(out.exit_code, Some(0), "{rendered}");
+    // unittest writes progress to stderr.
+    assert!(
+        rendered.contains("Ran 1 test") || rendered.contains("OK"),
+        "unittest output missing: {rendered}"
     );
-    assert!(temp.path().join("target/debug/sbtest").exists());
+}
+
+#[tokio::test]
+async fn node_test_runner_works() {
+    let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(
+        temp.path().join("math.test.js"),
+        "const test = require('node:test');\nconst assert = require('node:assert');\ntest('adds', () => { assert.strictEqual(1 + 1, 2); });\n",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let out = run(&temp, "node --test").await;
+    assert_eq!(out.exit_code, Some(0), "{}", out.render());
+    assert!(
+        out.stdout.head.contains("pass 1")
+            || out.stdout.head.contains("1 passing")
+            || out.stdout.head.contains("# pass 1"),
+        "{}",
+        out.stdout.head
+    );
+}
+
+#[tokio::test]
+async fn rust_cargo_test_works_offline() {
+    let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[package]\nname = \"sbtest\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir_all(temp.path().join("src")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() { assert_eq!(super::add(1, 1), 2); }\n}\n",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let out = run(&temp, "cargo test --offline -q").await;
+    let rendered = out.render();
+    assert_eq!(out.exit_code, Some(0), "cargo test must pass: {rendered}");
+    assert!(rendered.contains("test result: ok"), "{rendered}");
 }
 
 // --- Debug helper --------------------------------------------------------

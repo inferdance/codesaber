@@ -41,15 +41,9 @@ pub fn build_profile(cwd: &Path, data_dir: &Path, home: &Path) -> Result<String,
         .and_then(|_| data_dir.canonicalize())
         .map_err(|e| format!("data dir: {e}"))?;
 
-    let mut writable = vec![cwd.clone(), data_dir];
-    if let Ok(tmp) = std::env::var("TMPDIR") {
-        let tmp = PathBuf::from(tmp);
-        if let Ok(canon) = tmp.canonicalize() {
-            writable.push(canon);
-        }
-    }
-    writable.push(PathBuf::from("/tmp"));
-    writable.push(PathBuf::from("/private/tmp"));
+    let session_tmp = data_dir.join("tmp");
+    std::fs::create_dir_all(&session_tmp).map_err(|e| format!("session tmp dir: {e}"))?;
+    let mut writable = vec![cwd.clone(), data_dir.clone()];
     writable.push(PathBuf::from("/dev/null"));
 
     let mut denies = Vec::new();
@@ -69,7 +63,7 @@ pub fn build_profile(cwd: &Path, data_dir: &Path, home: &Path) -> Result<String,
         ));
     }
     // Workspace secret globs: <cwd>/**.env*, <cwd>/**.pem, <cwd>/**id_rsa*
-    for pattern in [r"\.env[^/]*$", r"\.pem$", r"id_rsa[^/]*$"] {
+    for pattern in [r"[^/]*\.env[^/]*$", r"[^/]*\.pem$", r"[^/]*id_rsa[^/]*$"] {
         denies.push(format!(
             "(deny file-read* (regex #\"^{}/{}{}\"))",
             regex_escape(&cwd.display().to_string()),
@@ -110,7 +104,16 @@ fn sbpl_string(path: &Path) -> String {
 }
 
 fn regex_escape(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('.', "\\.")
+    let mut out = String::with_capacity(text.len() * 2);
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '/' {
+            out.push(ch);
+        } else {
+            out.push('\\');
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn regex_escape_segments() -> String {
@@ -200,7 +203,11 @@ impl BashExecutor for SeatbeltExecutor {
                 "-c".to_owned(),
                 command,
             ];
-            let mut output = run_with_governance(&argv, &env, timeout, "bash").await?;
+            let session_tmp = env.data_dir.join("tmp");
+            std::fs::create_dir_all(&session_tmp).map_err(|e| format!("session tmp dir: {e}"))?;
+            let env_overrides = vec![("TMPDIR".to_owned(), session_tmp.display().to_string())];
+            let mut output =
+                run_with_governance(&argv, &env, timeout, "bash", &env_overrides).await?;
             if looks_like_denial(&output) {
                 annotate_denial(&mut output, &env.cwd, &env.data_dir);
             }

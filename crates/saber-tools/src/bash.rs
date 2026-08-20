@@ -254,6 +254,7 @@ pub async fn run_with_governance(
     env: &BashEnv,
     timeout: Duration,
     tool_label: &str,
+    env_overrides: &[(String, String)],
 ) -> Result<BashOutput, String> {
     // Spill initialization happens BEFORE spawn: no post-spawn setup
     // failure can orphan a running child.
@@ -279,6 +280,9 @@ pub async fn run_with_governance(
         if let Ok(value) = std::env::var(var) {
             cmd.env(var, value);
         }
+    }
+    for (key, value) in env_overrides {
+        cmd.env(key, value);
     }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -404,7 +408,7 @@ impl BashExecutor for DirectExecutor {
         let command = command.to_owned();
         Box::pin(async move {
             let argv = vec!["/bin/bash".to_owned(), "-c".to_owned(), command.clone()];
-            run_with_governance(&argv, &env, timeout, "bash").await
+            run_with_governance(&argv, &env, timeout, "bash", &[]).await
         })
     }
 }
@@ -451,7 +455,24 @@ pub async fn run_bash(
         )
         .await
     {
-        Ok(output) => (output.render(), false),
+        Ok(output) => {
+            let mut rendered = output.render();
+            if rendered.contains(SANDBOX_DENIAL_MARKER) {
+                let repeats = ctx.record_sandbox_denial(&params.command);
+                if repeats >= 2 {
+                    rendered.push_str(&format!(
+                        "\n[saber] the SAME sandbox boundary denied this command {repeats} \
+                         times in a row — stop retrying variations of it. The boundary is \
+                         intentional: write only inside the workspace, treat secrets as \
+                         unreadable, and expect no network. Ask the user when the task \
+                         truly needs more."
+                    ));
+                }
+            } else {
+                ctx.reset_denials();
+            }
+            (rendered, false)
+        }
         Err(e) => (format!("bash failed: {e}"), true),
     }
 }
