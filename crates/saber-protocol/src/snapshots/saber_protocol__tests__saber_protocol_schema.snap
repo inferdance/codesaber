@@ -327,6 +327,13 @@ expression: schema_artifact_json()
             "call_id": {
               "type": "string"
             },
+            "error_detail": {
+              "description": "Failure reason shown to model and frontends when `is_error`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "is_error": {
               "type": "boolean"
             },
@@ -339,6 +346,48 @@ expression: schema_artifact_json()
             "type",
             "call_id",
             "is_error"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The in-flight tool was cancelled (user abort / shutdown). Distinct\nfrom failure: session recovery treats it as unfinished — never\nreplayed, never reported as an error to the model.",
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "call_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Per-step usage/cost so frontends can render turn economics without\nscraping Finish events.",
+          "properties": {
+            "step_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "step_finished",
+              "type": "string"
+            },
+            "usage": {
+              "$ref": "#/$defs/Usage"
+            }
+          },
+          "required": [
+            "type",
+            "turn_id",
+            "step_id",
+            "usage"
           ],
           "type": "object"
         },

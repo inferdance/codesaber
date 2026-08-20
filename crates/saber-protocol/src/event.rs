@@ -2,6 +2,7 @@
 //! JSON-RPC notifications on the wire, wrapped in [`Event`] with a monotonic
 //! `seq` (replay-on-reconnect is keyed on it) and the originating session.
 
+use crate::message::Usage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +53,22 @@ pub enum EventMsg {
     ToolCompleted {
         call_id: String,
         is_error: bool,
+        /// Failure reason shown to model and frontends when `is_error`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_detail: Option<String>,
+    },
+    /// The in-flight tool was cancelled (user abort / shutdown). Distinct
+    /// from failure: session recovery treats it as unfinished — never
+    /// replayed, never reported as an error to the model.
+    ToolCancelled {
+        call_id: String,
+    },
+    /// Per-step usage/cost so frontends can render turn economics without
+    /// scraping Finish events.
+    StepFinished {
+        turn_id: String,
+        step_id: String,
+        usage: Usage,
     },
     /// Context watermark; `context_window` is the effective window in tokens.
     TokenCount {
@@ -115,6 +132,36 @@ mod tests {
         assert_eq!(json["msg"]["delta"]["kind"], "tool_call");
         let back: Event = serde_json::from_value(json)?;
         assert_eq!(back, event);
+        Ok(())
+    }
+
+    #[test]
+    fn tool_lifecycle_events_roundtrip() -> Result<(), serde_json::Error> {
+        let events = vec![
+            EventMsg::ToolCompleted {
+                call_id: "call_1".into(),
+                is_error: true,
+                error_detail: Some("exit 1: test failed".into()),
+            },
+            EventMsg::ToolCancelled {
+                call_id: "call_2".into(),
+            },
+            EventMsg::StepFinished {
+                turn_id: "t_1".into(),
+                step_id: "st_1".into(),
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cost_usd: 0.001,
+                    ..Usage::default()
+                },
+            },
+        ];
+        for event in events {
+            let json = serde_json::to_string(&event)?;
+            let back: EventMsg = serde_json::from_str(&json)?;
+            assert_eq!(back, event);
+        }
         Ok(())
     }
 }
