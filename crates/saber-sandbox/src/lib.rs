@@ -213,7 +213,7 @@ pub async fn debug_run(
         data_dir: data_dir.to_owned(),
         session_id: "debug".to_owned(),
     };
-    let executor = SeatbeltExecutor::default();
+    let executor = SeatbeltExecutor;
     let output = executor
         .execute(&env, command, Duration::from_millis(DEFAULT_TIMEOUT_MS))
         .await?;
