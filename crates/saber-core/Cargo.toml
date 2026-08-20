@@ -17,9 +17,9 @@ saber-tools = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
-tokio = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true }
 serde = { workspace = true }
 tempfile = { workspace = true }
 anyhow = { workspace = true }
