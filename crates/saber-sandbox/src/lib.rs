@@ -18,21 +18,12 @@
 //! retrying blindly; the tool layer counts repeat fingerprints.
 
 use futures::future::BoxFuture;
-use saber_tools::bash::{
-    BashEnv, BashExecutor, BashOutput, SANDBOX_DENIAL_MARKER, run_with_governance,
-};
+use saber_tools::bash::{BashEnv, BashExecutor, BashOutput, run_with_governance};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const DENIAL_MARKER: &str = SANDBOX_DENIAL_MARKER;
+pub use saber_tools::bash::SANDBOX_DENIAL_MARKER as DENIAL_MARKER;
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
-
-/// Configuration for one sandboxed execution context.
-#[derive(Debug, Clone)]
-pub struct SandboxConfig {
-    /// Writable roots beyond the workspace and data dir (e.g. TMPDIR).
-    pub extra_writable_roots: Vec<PathBuf>,
-}
 
 /// Builds the M0 `workspace-write-lite` profile.
 pub fn build_profile(cwd: &Path, data_dir: &Path, home: &Path) -> Result<String, String> {
@@ -41,13 +32,11 @@ pub fn build_profile(cwd: &Path, data_dir: &Path, home: &Path) -> Result<String,
         .and_then(|_| data_dir.canonicalize())
         .map_err(|e| format!("data dir: {e}"))?;
 
-    let session_tmp = data_dir.join("tmp");
-    std::fs::create_dir_all(&session_tmp).map_err(|e| format!("session tmp dir: {e}"))?;
     let mut writable = vec![cwd.clone(), data_dir.clone()];
     writable.push(PathBuf::from("/dev/null"));
 
     let mut denies = Vec::new();
-    for dir in [".ssh", ".aws", ".gnupg", ".kube"] {
+    for dir in saber_tools::path_policy::SECRET_HOME_DIRS {
         let secret = home.join(dir);
         if secret.exists() {
             if let Ok(canon) = secret.canonicalize() {
@@ -62,8 +51,10 @@ pub fn build_profile(cwd: &Path, data_dir: &Path, home: &Path) -> Result<String,
             sbpl_string(&secret)
         ));
     }
-    // Workspace secret globs: <cwd>/**.env*, <cwd>/**.pem, <cwd>/**id_rsa*
-    for pattern in [r"[^/]*\.env[^/]*$", r"[^/]*\.pem$", r"[^/]*id_rsa[^/]*$"] {
+    // Workspace secret globs derived from the unified suffix list:
+    // <cwd>/**<suffix> for every secret suffix.
+    for suffix in saber_tools::path_policy::SECRET_SUFFIXES {
+        let pattern = format!("[^/]*{}$", regex_escape(suffix));
         denies.push(format!(
             "(deny file-read* (regex #\"^{}/{}{}\"))",
             regex_escape(&cwd.display().to_string()),
@@ -71,6 +62,12 @@ pub fn build_profile(cwd: &Path, data_dir: &Path, home: &Path) -> Result<String,
             pattern
         ));
     }
+    // Protect git history inside the workspace: writes allowed broadly,
+    // but .git stays read-only (the agent must not rewrite history).
+    denies.push(format!(
+        "(deny file-write* (subpath {}))",
+        sbpl_string(&cwd.join(".git"))
+    ));
 
     let allows: Vec<String> = writable
         .iter()
@@ -86,6 +83,16 @@ pub fn build_profile(cwd: &Path, data_dir: &Path, home: &Path) -> Result<String,
          (allow file-map-executable)\n\
          (allow mach-lookup)\n\
          (allow signal (target self))\n\
+         (allow file-write*\n\
+             (require-any (literal \"/dev/ptmx\")\n\
+                          (subpath \"/dev/tty\")\n\
+                          (subpath \"/dev/pts\")\n\
+                          (regex #\"^/dev/ttys[0-9]+$\")))\n\
+         (allow file-ioctl\n\
+             (require-any (literal \"/dev/ptmx\")\n\
+                          (subpath \"/dev/tty\")\n\
+                          (subpath \"/dev/pts\")\n\
+                          (regex #\"^/dev/ttys[0-9]+$\")))\n\
          {}\n\
          {}\n",
         allows.join("\n"),
@@ -127,6 +134,7 @@ fn looks_like_denial(output: &BashOutput) -> bool {
         &output.stderr.head,
         &output.stderr.tail,
         &output.stdout.head,
+        &output.stdout.tail,
     ];
     haystacks.iter().any(|text| {
         text.contains("Operation not permitted")
@@ -143,8 +151,9 @@ fn looks_like_denial(output: &BashOutput) -> bool {
 fn annotate_denial(output: &mut BashOutput, cwd: &Path, data_dir: &Path) {
     let note = format!(
         "\n{DENIAL_MARKER} the sandbox blocked part of this command. \
-         Writable paths: {} and {}; reads of secret files (~/.ssh, ~/.aws, \
-         ~/.gnupg, ~/.kube, .env, *.pem, id_rsa) are denied; ALL network \
+         Writable paths: {} and {}; reads of secret files (ssh/cloud keys, \
+         .env, certificates) are denied; the workspace .git directory is \
+         read-only; ALL network \
          access is disabled in this mode. Adjust the command to stay within \
          these boundaries instead of retrying the same approach.",
         cwd.display(),
@@ -154,24 +163,8 @@ fn annotate_denial(output: &mut BashOutput, cwd: &Path, data_dir: &Path) {
 }
 
 /// Seatbelt-wrapped bash executor (production wiring for M0+).
-#[derive(Debug, Clone)]
-pub struct SeatbeltExecutor {
-    config: SandboxConfig,
-}
-
-impl SeatbeltExecutor {
-    pub fn new(config: SandboxConfig) -> Self {
-        Self { config }
-    }
-}
-
-impl Default for SeatbeltExecutor {
-    fn default() -> Self {
-        Self::new(SandboxConfig {
-            extra_writable_roots: Vec::new(),
-        })
-    }
-}
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SeatbeltExecutor;
 
 impl BashExecutor for SeatbeltExecutor {
     fn execute(
@@ -182,18 +175,9 @@ impl BashExecutor for SeatbeltExecutor {
     ) -> BoxFuture<'static, Result<BashOutput, String>> {
         let env = env.clone();
         let command = command.to_owned();
-        let extra_roots = self.config.extra_writable_roots.clone();
         Box::pin(async move {
             let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-            let mut profile = build_profile(&env.cwd, &env.data_dir, &home)?;
-            for root in &extra_roots {
-                if let Ok(canon) = root.canonicalize() {
-                    profile.push_str(&format!(
-                        "(allow file-write* (subpath {}))\n",
-                        sbpl_string(&canon)
-                    ));
-                }
-            }
+            let profile = build_profile(&env.cwd, &env.data_dir, &home)?;
             let argv = vec![
                 "/usr/bin/sandbox-exec".to_owned(),
                 "-p".to_owned(),

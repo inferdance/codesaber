@@ -7,7 +7,7 @@
 
 #![cfg(target_os = "macos")]
 
-use saber_sandbox::{DENIAL_MARKER, SandboxConfig, SeatbeltExecutor, debug_run};
+use saber_sandbox::{DENIAL_MARKER, SeatbeltExecutor, debug_run};
 use saber_tools::bash::{BashEnv, BashExecutor};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -20,14 +20,20 @@ fn env_for(temp: &tempfile::TempDir) -> BashEnv {
     }
 }
 
-async fn run(temp: &tempfile::TempDir, command: &str) -> saber_tools::bash::BashOutput {
-    let executor = SeatbeltExecutor::new(SandboxConfig {
-        extra_writable_roots: Vec::new(),
-    });
-    executor
-        .execute(&env_for(temp), command, Duration::from_secs(60))
+async fn run_at(workspace: &std::path::Path, command: &str) -> saber_tools::bash::BashOutput {
+    let env = BashEnv {
+        cwd: workspace.to_owned(),
+        data_dir: workspace.join(".saber"),
+        session_id: "s-sb-test".to_owned(),
+    };
+    SeatbeltExecutor
+        .execute(&env, command, Duration::from_secs(60))
         .await
         .unwrap_or_else(|e| panic!("{e}"))
+}
+
+async fn run(temp: &tempfile::TempDir, command: &str) -> saber_tools::bash::BashOutput {
+    run_at(temp.path(), command).await
 }
 
 fn denied(output: &saber_tools::bash::BashOutput) -> bool {
@@ -132,18 +138,7 @@ async fn special_char_workspace_names_still_deny_secrets() {
     let weird = base.path().join("a+b[c](d)");
     std::fs::create_dir_all(&weird).unwrap_or_else(|e| panic!("{e}"));
     std::fs::write(weird.join(".env"), "SECRET=1").unwrap_or_else(|e| panic!("{e}"));
-    let executor = SeatbeltExecutor::new(SandboxConfig {
-        extra_writable_roots: Vec::new(),
-    });
-    let env = BashEnv {
-        cwd: weird.clone(),
-        data_dir: weird.join(".saber"),
-        session_id: "s-weird".to_owned(),
-    };
-    let out = executor
-        .execute(&env, "cat .env", Duration::from_secs(30))
-        .await
-        .unwrap_or_else(|e| panic!("{e}"));
+    let out = run_at(&weird, "cat .env").await;
     assert!(
         denied(&out),
         "denial must survive special chars: {}",
@@ -257,6 +252,35 @@ async fn rust_cargo_test_works_offline() {
     let rendered = out.render();
     assert_eq!(out.exit_code, Some(0), "cargo test must pass: {rendered}");
     assert!(rendered.contains("test result: ok"), "{rendered}");
+}
+
+#[tokio::test]
+async fn pty_allocation_works() {
+    let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    // `script` needs a pty via /dev/ptmx.
+    let out = run(&temp, "script -q /dev/null echo pty-ok").await;
+    assert_eq!(
+        out.exit_code,
+        Some(0),
+        "pty commands must pass: {}",
+        out.render()
+    );
+    assert!(out.render().contains("pty-ok"), "{}", out.render());
+}
+
+#[tokio::test]
+async fn git_directory_writes_are_denied() {
+    let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    std::fs::create_dir_all(temp.path().join(".git")).unwrap_or_else(|e| panic!("{e}"));
+    std::fs::write(temp.path().join(".git/HEAD"), "ref: refs/heads/main")
+        .unwrap_or_else(|e| panic!("{e}"));
+    let out = run(&temp, "echo hacked > .git/HEAD").await;
+    assert!(denied(&out), ".git must be read-only: {}", out.render());
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join(".git/HEAD")).unwrap_or_default(),
+        "ref: refs/heads/main",
+        "git history must be intact"
+    );
 }
 
 // --- Debug helper --------------------------------------------------------

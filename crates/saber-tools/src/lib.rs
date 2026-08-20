@@ -754,6 +754,17 @@ mod tests {
             "second consecutive denial must escalate: {}",
             second[0].content
         );
+        assert!(second[0].is_error, "repeat denial must be a hard error");
+
+        // A whitespace variant of the same command still counts as a repeat.
+        let variant = serde_json::json!({"command": "cat   blocked-file"});
+        let third = registry
+            .execute_batch(ctx.clone(), vec![("bash".into(), variant)])
+            .await;
+        assert!(
+            third[0].is_error,
+            "normalized fingerprint must match variants"
+        );
 
         // A clean run resets the streak.
         let clean = registry

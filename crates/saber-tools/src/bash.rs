@@ -458,7 +458,14 @@ pub async fn run_bash(
         Ok(output) => {
             let mut rendered = output.render();
             if rendered.contains(SANDBOX_DENIAL_MARKER) {
-                let repeats = ctx.record_sandbox_denial(&params.command);
+                // Whitespace-normalized fingerprint so trivial reformatting
+                // of the same doomed command still counts as a repeat.
+                let fingerprint = params
+                    .command
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let repeats = ctx.record_sandbox_denial(&fingerprint);
                 if repeats >= 2 {
                     rendered.push_str(&format!(
                         "\n[saber] the SAME sandbox boundary denied this command {repeats} \
@@ -467,11 +474,15 @@ pub async fn run_bash(
                          unreadable, and expect no network. Ask the user when the task \
                          truly needs more."
                     ));
+                    // Hard stop: a repeated identical denial returns as an
+                    // error so the loop treats it as a failed tool call.
+                    return (rendered, true);
                 }
+                (rendered, false)
             } else {
                 ctx.reset_denials();
+                (rendered, false)
             }
-            (rendered, false)
         }
         Err(e) => (format!("bash failed: {e}"), true),
     }

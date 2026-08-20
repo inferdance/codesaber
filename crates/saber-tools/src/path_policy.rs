@@ -25,6 +25,22 @@ pub enum PathDenied {
     Unresolvable { path: PathBuf, reason: String },
 }
 
+/// Secret home directories denied for reads — the single list shared by
+/// the engine path policy AND the sandbox profile builder.
+pub const SECRET_HOME_DIRS: [&str; 4] = [".ssh", ".aws", ".gnupg", ".kube"];
+
+/// Secret file-name suffixes denied for reads (unified list).
+pub const SECRET_SUFFIXES: [&str; 8] = [
+    ".env",
+    ".env.local",
+    ".pem",
+    "id_rsa",
+    "id_ed25519",
+    ".npmrc",
+    ".netrc",
+    ".git-credentials",
+];
+
 #[derive(Debug, Clone)]
 pub struct PathPolicy {
     writable_roots: Vec<PathBuf>,
@@ -70,7 +86,7 @@ impl PathPolicy {
     /// canonical form catches symlinked-at-construction roots.
     fn deny_prefixes_for(home: &Path) -> Vec<PathBuf> {
         let mut prefixes = Vec::new();
-        for dir in [".ssh", ".aws", ".gnupg", ".kube"] {
+        for dir in SECRET_HOME_DIRS {
             let lexical = home.join(dir);
             if let Ok(canonical) = lexical.canonicalize() {
                 prefixes.push(canonical);
