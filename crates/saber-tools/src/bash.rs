@@ -265,9 +265,13 @@ impl BashExecutor for DirectExecutor {
                     // Belt and braces: direct SIGKILL unblocks wait() on
                     // every unix; the group kill then reaps grandchildren
                     // (best-effort — the fault matrix owns verifying it).
-                    let _ = child.start_kill();
+                    eprintln!("[saber-bash-dbg] timeout fired, pid={pid:?}");
+                    let kill_result = child.start_kill();
+                    eprintln!("[saber-bash-dbg] start_kill={kill_result:?}");
                     kill_process_group(pid).await;
+                    eprintln!("[saber-bash-dbg] group kill done");
                     let status = child.wait().await;
+                    eprintln!("[saber-bash-dbg] second wait={status:?}");
                     (status.map(|s| s.code()).unwrap_or(None), true)
                 }
             };
