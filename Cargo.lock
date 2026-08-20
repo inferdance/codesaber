@@ -1417,7 +1417,6 @@ dependencies = [
  "globset",
  "grep",
  "ignore",
- "saber-protocol",
  "schemars",
  "serde",
  "serde_json",
