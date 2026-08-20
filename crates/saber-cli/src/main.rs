@@ -130,7 +130,7 @@ async fn async_move_exec(
             Arc::new(saber_provider::anthropic::AnthropicProvider::new(config)?),
             model_override.unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_owned()),
         )
-    } else if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+    } else if let Ok(key) = env_var(&["SABER_OPENAI_KEY", "OPENAI_API_KEY"]) {
         let config = OpenAiCompatConfig {
             name: "openai".into(),
             base_url: "https://api.openai.com/v1".into(),
@@ -257,9 +257,18 @@ async fn async_move_exec(
     }
 }
 
+fn env_var(names: &[&str]) -> Result<String, std::env::VarError> {
+    for name in names {
+        if let Ok(value) = std::env::var(name) {
+            return Ok(value);
+        }
+    }
+    Err(std::env::VarError::NotPresent)
+}
+
 fn deepseek_config() -> Result<(String, String), std::env::VarError> {
-    let key = std::env::var("DEEPSEEK_API_KEY")?;
-    let base = std::env::var("DEEPSEEK_BASE_URL")
+    let key = env_var(&["SABER_DEEPSEEK_KEY", "DEEPSEEK_API_KEY"])?;
+    let base = env_var(&["SABER_DEEPSEEK_BASE_URL", "DEEPSEEK_BASE_URL"])
         .unwrap_or_else(|_| "https://api.deepseek.com/v1".to_owned());
     Ok((key, base))
 }
@@ -279,15 +288,33 @@ fn git_branch(cwd: &std::path::Path) -> Option<String> {
         .map(|s| s.to_owned())
 }
 
+/// Collects AGENTS.md/CLAUDE.md along the ancestor chain (root → cwd),
+/// concatenating all found files. AGENTS.md takes precedence per directory.
 fn agents_md(cwd: &std::path::Path) -> Option<String> {
-    for name in ["AGENTS.md", "CLAUDE.md"] {
-        if let Ok(content) = std::fs::read_to_string(cwd.join(name)) {
-            if !content.trim().is_empty() {
-                return Some(content);
+    let mut chain: Vec<std::path::PathBuf> = Vec::new();
+    let mut current = Some(cwd.to_path_buf());
+    while let Some(dir) = current {
+        chain.push(dir.clone());
+        current = dir.parent().map(|p| p.to_path_buf());
+    }
+    chain.reverse(); // root first
+
+    let mut collected = Vec::new();
+    for dir in chain {
+        for name in ["AGENTS.md", "CLAUDE.md"] {
+            if let Ok(content) = std::fs::read_to_string(dir.join(name)) {
+                if !content.trim().is_empty() {
+                    collected.push(content);
+                    break; // AGENTS.md wins per directory
+                }
             }
         }
     }
-    None
+    if collected.is_empty() {
+        None
+    } else {
+        Some(collected.join("\n\n"))
+    }
 }
 
 // ============================================================
