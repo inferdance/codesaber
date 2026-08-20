@@ -14,6 +14,9 @@
 
 pub mod session;
 
+/// Engine build identity exposed to frontends for version handshakes.
+pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 use saber_protocol::{Block, Event, EventMsg, Message, Role, SessionEvent, Usage};
 use saber_provider::retry::RetryPolicy;
 use saber_provider::retry::stream_with_retry;
