@@ -1,7 +1,7 @@
 //! The `saber` binary. M0 skeleton: subcommand dispatch is a placeholder;
 //! `saber exec -p` headless mode lands with T6.
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // args_os: never panics on non-UTF-8 argv (a legal Unix condition);
     // we only echo the subcommand here, so lossy display is fine.
     let subcommand = std::env::args_os()

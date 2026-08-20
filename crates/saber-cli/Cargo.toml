@@ -17,4 +17,3 @@ path = "src/main.rs"
 [dependencies]
 saber-core = { workspace = true }
 saber-protocol = { workspace = true }
-anyhow = { workspace = true }
