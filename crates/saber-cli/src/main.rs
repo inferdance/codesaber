@@ -182,12 +182,18 @@ async fn async_move_exec(
         },
     )?);
 
-    // Tools: M0 uses the direct executor (no sandbox in exec mode for now;
-    // T4b's Seatbelt executor is wired when the sandbox subcommand is
-    // explicitly requested — see `saber debug sandbox`).
+    // Tools: production uses the Seatbelt sandbox executor on macOS
+    // (non-macOS falls back to direct execution with env scrubbing —
+    // the AGENTS.md invariant "all file access goes through the unified
+    // path policy" requires the sandbox in production).
     let tool_context = Arc::new(ToolContext::new(session_id.clone(), &cwd, &data_dir)?);
     let mut registry = Registry::new();
-    for tool in builtin_tools(Arc::new(DirectExecutor)) {
+    #[cfg(target_os = "macos")]
+    let bash_executor: Arc<dyn saber_tools::bash::BashExecutor> =
+        Arc::new(saber_sandbox::SeatbeltExecutor);
+    #[cfg(not(target_os = "macos"))]
+    let bash_executor: Arc<dyn saber_tools::bash::BashExecutor> = Arc::new(DirectExecutor);
+    for tool in builtin_tools(bash_executor) {
         registry.register(tool);
     }
 
@@ -224,26 +230,38 @@ async fn async_move_exec(
 
     match result {
         Ok(Ok((answer, outcome))) => {
+            // Exit-code contract (both text and --json modes):
+            //   0 = Done, 1 = failure, 124 = timeout
+            let exit_code = match &outcome {
+                TurnOutcome::Done => 0,
+                TurnOutcome::ProviderFailure(msg) => {
+                    eprintln!("provider error: {msg}");
+                    1
+                }
+                TurnOutcome::DoomLoop(msg) => {
+                    eprintln!("doom loop: {msg}");
+                    1
+                }
+                TurnOutcome::LengthRefusal => {
+                    eprintln!("response truncated; tool calls refused");
+                    1
+                }
+                TurnOutcome::MaxSteps => {
+                    eprintln!("step budget exhausted");
+                    1
+                }
+            };
             if !json_mode {
                 println!("{answer}");
-                if let TurnOutcome::ProviderFailure(msg) = &outcome {
-                    eprintln!("provider error: {msg}");
-                    std::process::exit(1);
-                }
-                if let TurnOutcome::DoomLoop(msg) = &outcome {
-                    eprintln!("doom loop: {msg}");
-                    std::process::exit(1);
-                }
-                if outcome == TurnOutcome::LengthRefusal {
-                    eprintln!("response truncated; tool calls refused");
-                    std::process::exit(1);
-                }
             }
             let usage = engine.usage_total();
             eprintln!(
                 "[tokens: in={}, out={}, cost=${:.4}, session: {}]",
                 usage.input_tokens, usage.output_tokens, usage.cost_usd, session_id
             );
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
             Ok(())
         }
         Ok(Err(e)) => {
