@@ -38,11 +38,7 @@ async fn run_write_inner(ctx: &ToolContext, params: WriteParams) -> Result<Strin
             .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
     let _guard = ctx.file_lock(&resolved).await;
-    let tmp = resolved.with_extension(format!("sabertmp-{}", std::process::id()));
-    tokio::fs::write(&tmp, &params.content)
-        .await
-        .map_err(|e| format!("{}: {e}", params.path))?;
-    tokio::fs::rename(&tmp, &resolved)
+    crate::atomic_write(&resolved, &params.content)
         .await
         .map_err(|e| format!("{}: {e}", params.path))?;
     Ok(format!(

@@ -100,6 +100,13 @@ impl ToolContext {
         cwd: &Path,
         data_dir: &Path,
     ) -> Result<Self, path_policy::PathDenied> {
+        // Best-effort retention sweep: 7-day truncations cleanup runs once
+        // per session start and never blocks construction (fix: the sweep
+        // previously had no production caller).
+        let _ = truncation::cleanup_stale_truncations(
+            data_dir,
+            std::time::Duration::from_secs(60 * 60 * 24 * 7),
+        );
         Ok(Self {
             session_id: session_id.into(),
             cwd: cwd.to_owned(),
@@ -374,6 +381,78 @@ pub fn schema_for<T: schemars::JsonSchema>() -> serde_json::Value {
         .unwrap_or_else(|_| serde_json::json!({"type": "object"}))
 }
 
+/// Atomic file write shared by `write` and `edit` (single implementation —
+/// duplicated atomic writes were a review finding).
+///
+/// Security properties:
+/// - The temp file is created with `create_new` under a **unique** name
+///   (pid + monotonic counter) in the target's directory: pre-planting a
+///   symlink at a predictable path fails with `EEXIST` instead of being
+///   followed, so the write cannot escape the policy-checked directory.
+/// - Content goes through the freshly created handle — no second lookup.
+/// - Existing permissions (exec bit, ACL-relevant mode bits) are copied
+///   onto the temp file before the rename, so `chmod +x` survives edits.
+/// - On any failure the temp file is removed.
+pub async fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_owned());
+    let existing_perms = tokio::fs::metadata(path)
+        .await
+        .ok()
+        .map(|m| m.permissions());
+
+    let mut last_err = None;
+    for _ in 0..8 {
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = directory.join(format!(
+            ".{file_name}.sabertmp-{}-{seq}",
+            std::process::id()
+        ));
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .await;
+        let file = match file {
+            Ok(file) => file,
+            Err(e) => {
+                last_err = Some(e);
+                continue;
+            }
+        };
+        let result = write_via_handle(file, path, &tmp, content, existing_perms.as_ref()).await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+        return result;
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("could not create a unique temp file")))
+}
+
+async fn write_via_handle(
+    file: tokio::fs::File,
+    final_path: &Path,
+    tmp_path: &Path,
+    content: &str,
+    existing_perms: Option<&std::fs::Permissions>,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut file = file;
+    file.write_all(content.as_bytes()).await?;
+    file.flush().await?;
+    drop(file);
+    if let Some(perms) = existing_perms {
+        tokio::fs::set_permissions(tmp_path, perms.clone()).await?;
+    }
+    tokio::fs::rename(tmp_path, final_path).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,9 +582,11 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(unsafe_code)] // test-only: set_var/remove_var are unsafe in edition 2024
-    async fn bash_env_holds_no_secrets_and_cwd_is_workspace() {
-        unsafe { std::env::set_var("SABER_TEST_SECRET", "leak-me") };
+    async fn bash_env_is_scrubbed_to_the_allowlist() {
+        // No parent-env mutation (edition-2024-safe): inspect what the child
+        // actually sees via `env` and require the variable set to be the
+        // allowlist plus bash builtins. If env_clear ever regresses, parent
+        // vars (USER/SHELL/TERM/CARGO/...) appear here and fail the test.
         let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let registry = registry();
         let ctx = context(&temp);
@@ -514,25 +595,45 @@ mod tests {
                 ctx,
                 vec![(
                     "bash".into(),
-                    serde_json::json!({"command": "echo secret=${SABER_TEST_SECRET:-absent}; pwd"}),
+                    serde_json::json!({"command": "echo ENV_BEGIN; env | cut -d= -f1 | sort | tr '\n' ' '; echo ENV_END; pwd"}),
                 )],
             )
             .await;
-        unsafe { std::env::remove_var("SABER_TEST_SECRET") };
-        assert!(!results[0].is_error, "{}", results[0].content);
+        let output = &results[0].content;
+        assert!(!results[0].is_error, "{output}");
+        let env_block = output
+            .split("ENV_BEGIN")
+            .nth(1)
+            .and_then(|rest| rest.split("ENV_END").next())
+            .unwrap_or_default();
+        let allowed = [
+            "PATH",
+            "HOME",
+            "LANG",
+            "TMPDIR",
+            "PWD",
+            "OLDPWD",
+            "SHLVL",
+            "_",
+            "BASH_VERS",
+        ];
+        for name in env_block.split_whitespace() {
+            let known = allowed.iter().any(|a| name.starts_with(a));
+            assert!(
+                known,
+                "child env leaked parent variable {name:?}; env block: {env_block}"
+            );
+        }
+        assert!(env_block.contains("PATH"));
         assert!(
-            results[0].content.contains("secret=absent"),
-            "{}",
-            results[0].content
-        );
-        assert!(
-            results[0].content.contains(
+            output.contains(
                 temp.path()
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .as_ref()
-            )
+            ),
+            "cwd must be the workspace: {output}"
         );
     }
 
@@ -554,7 +655,7 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
         assert!(!results[0].is_error); // timeout is a reported outcome, not a tool failure
         assert!(
-            results[0].content.contains("timed out"),
+            results[0].content.contains("[exit code: timeout]"),
             "{}",
             results[0].content
         );

@@ -21,15 +21,24 @@ pub struct GrepParams {
 const DEFAULT_MAX_RESULTS: usize = 200;
 
 pub async fn run_grep(ctx: &ToolContext, params: GrepParams) -> (String, bool) {
-    // Content search is CPU/IO-bound and short; running it synchronously
-    // inside the async fn keeps the code honest about borrowing.
-    match run_grep_inner(ctx, params) {
+    // Blocking walker/searcher work must leave the async workers: real
+    // parallelism for read-class tools (and the runtime stays responsive).
+    let cwd = ctx.cwd.clone();
+    let policy = ctx.policy.clone();
+    let joined = tokio::task::spawn_blocking(move || run_grep_inner(&cwd, &policy, params))
+        .await
+        .map_err(|e| format!("grep task: {e}"));
+    match joined.and_then(|inner| inner) {
         Ok(output) => (output, false),
         Err(e) => (format!("grep failed: {e}"), true),
     }
 }
 
-fn run_grep_inner(ctx: &ToolContext, params: GrepParams) -> Result<String, String> {
+fn run_grep_inner(
+    cwd: &Path,
+    policy: &crate::path_policy::PathPolicy,
+    params: GrepParams,
+) -> Result<String, String> {
     let matcher = grep::regex::RegexMatcherBuilder::new()
         .case_insensitive(false)
         .build(&params.pattern)
@@ -38,8 +47,8 @@ fn run_grep_inner(ctx: &ToolContext, params: GrepParams) -> Result<String, Strin
         .path
         .as_ref()
         .map(PathBuf::from)
-        .unwrap_or_else(|| ctx.cwd.clone());
-    let resolved_root = ctx.policy.resolve(&root).map_err(|e| e.to_string())?;
+        .unwrap_or_else(|| cwd.to_owned());
+    let resolved_root = policy.resolve(&root).map_err(|e| e.to_string())?;
 
     let mut walker = ignore::WalkBuilder::new(&resolved_root);
     walker.hidden(true).git_ignore(true).git_exclude(true);
@@ -47,12 +56,14 @@ fn run_grep_inner(ctx: &ToolContext, params: GrepParams) -> Result<String, Strin
         let glob_matcher = globset::Glob::new(glob)
             .and_then(|g| globset::GlobSetBuilder::new().add(g).build())
             .map_err(|e| format!("invalid glob {glob}: {e}"))?;
-        let policy = ctx.policy.clone();
+        let policy = policy.clone();
+        let filter_root = resolved_root.clone();
         walker.filter_entry(move |entry| {
             if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 return true;
             }
-            matches_globset(&glob_matcher, entry.path()) && policy.check_read(entry.path()).is_ok()
+            matches_globset(&glob_matcher, &filter_root, entry.path())
+                && policy.check_read(entry.path()).is_ok()
         });
     }
 
@@ -63,7 +74,7 @@ fn run_grep_inner(ctx: &ToolContext, params: GrepParams) -> Result<String, Strin
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
-        if params.glob.is_none() && ctx.policy.check_read(entry.path()).is_err() {
+        if params.glob.is_none() && policy.check_read(entry.path()).is_err() {
             continue;
         }
         if results.len() >= max_results {
@@ -73,7 +84,7 @@ fn run_grep_inner(ctx: &ToolContext, params: GrepParams) -> Result<String, Strin
         let mut sink = grep::searcher::sinks::UTF8(|line_num, line| {
             if results.len() < max_results {
                 let text = line.trim_end();
-                let rel = relative_display(entry.path(), &ctx.cwd);
+                let rel = relative_display(entry.path(), cwd);
                 results.push(format!("{rel}:{line_num}:{text}"));
             }
             Ok(true)
@@ -85,7 +96,7 @@ fn run_grep_inner(ctx: &ToolContext, params: GrepParams) -> Result<String, Strin
         return Ok(format!(
             "no matches for {:?} (searched {searched} files under {})",
             params.pattern,
-            relative_display(&resolved_root, &ctx.cwd)
+            relative_display(&resolved_root, cwd)
         ));
     }
     let mut out = results.join("\n");
@@ -97,8 +108,11 @@ fn run_grep_inner(ctx: &ToolContext, params: GrepParams) -> Result<String, Strin
     Ok(out)
 }
 
-fn matches_globset(set: &globset::GlobSet, path: &Path) -> bool {
-    set.is_match(path) || set.is_match(path.file_name().unwrap_or_default())
+fn matches_globset(set: &globset::GlobSet, root: &Path, path: &Path) -> bool {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    set.is_match(relative)
+        || set.is_match(path.file_name().unwrap_or_default())
+        || set.is_match(path)
 }
 
 fn relative_display(path: &Path, base: &Path) -> String {

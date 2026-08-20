@@ -16,19 +16,28 @@ pub struct GlobParams {
 const DEFAULT_MAX_RESULTS: usize = 200;
 
 pub async fn run_glob(ctx: &ToolContext, params: GlobParams) -> (String, bool) {
-    match run_glob_inner(ctx, params) {
+    let cwd = ctx.cwd.clone();
+    let policy = ctx.policy.clone();
+    let joined = tokio::task::spawn_blocking(move || run_glob_inner(&cwd, &policy, params))
+        .await
+        .map_err(|e| format!("glob task: {e}"));
+    match joined.and_then(|inner| inner) {
         Ok(output) => (output, false),
         Err(e) => (format!("glob failed: {e}"), true),
     }
 }
 
-fn run_glob_inner(ctx: &ToolContext, params: GlobParams) -> Result<String, String> {
+fn run_glob_inner(
+    cwd: &std::path::Path,
+    policy: &crate::path_policy::PathPolicy,
+    params: GlobParams,
+) -> Result<String, String> {
     let root = params
         .path
         .as_ref()
         .map(PathBuf::from)
-        .unwrap_or_else(|| ctx.cwd.clone());
-    let resolved_root = ctx.policy.resolve(&root).map_err(|e| e.to_string())?;
+        .unwrap_or_else(|| cwd.to_owned());
+    let resolved_root = policy.resolve(&root).map_err(|e| e.to_string())?;
     let glob = globset::Glob::new(&params.pattern)
         .map_err(|e| format!("invalid glob {:?}: {e}", params.pattern))?;
     let matcher = globset::GlobSetBuilder::new()
@@ -55,12 +64,12 @@ fn run_glob_inner(ctx: &ToolContext, params: GlobParams) -> Result<String, Strin
         {
             continue;
         }
-        if ctx.policy.check_read(candidate).is_err() {
+        if policy.check_read(candidate).is_err() {
             continue;
         }
         paths.push(
             candidate
-                .strip_prefix(&ctx.cwd)
+                .strip_prefix(cwd)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| candidate.display().to_string()),
         );

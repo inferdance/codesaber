@@ -50,9 +50,14 @@ impl PathPolicy {
             })?;
         let home = std::env::var("HOME").unwrap_or_default();
         let home = PathBuf::from(home);
+        // Canonicalize deny roots where possible: `~/.ssh` itself may be a
+        // symlink, and a canonical target would otherwise slip the check.
         let denied_read_prefixes = [".ssh", ".aws", ".gnupg", ".kube"]
             .iter()
-            .map(|dir| home.join(dir))
+            .map(|dir| {
+                let path = home.join(dir);
+                path.canonicalize().unwrap_or(path)
+            })
             .collect();
         let denied_read_suffixes = vec![
             ".env".to_owned(),
@@ -75,26 +80,7 @@ impl PathPolicy {
     /// Resolves a path through `..`/`.` and symlinks: canonicalize the
     /// deepest existing ancestor, append the remainder.
     pub fn resolve(&self, path: &Path) -> Result<PathBuf, PathDenied> {
-        let absolute = if path.is_absolute() {
-            path.to_owned()
-        } else {
-            self.writable_roots
-                .first()
-                .cloned()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(path)
-        };
-        // Lexically normalize `..` and `.` before touching the filesystem.
-        let mut lexical = PathBuf::new();
-        for component in absolute.components() {
-            match component {
-                std::path::Component::ParentDir => {
-                    lexical.pop();
-                }
-                std::path::Component::CurDir => {}
-                other => lexical.push(other.as_os_str()),
-            }
-        }
+        let lexical = self.lexical_normalize(path);
         if lexical.exists() {
             return lexical
                 .canonicalize()
@@ -133,25 +119,60 @@ impl PathPolicy {
 
     pub fn check_read(&self, path: &Path) -> Result<PathBuf, PathDenied> {
         let resolved = self.resolve(path)?;
-        for prefix in &self.denied_read_prefixes {
-            if resolved.starts_with(prefix) {
+        // The lexical (pre-canonicalization) path guards against symlink
+        // renames: a workspace `.env -> /tmp/plain` must stay denied by its
+        // visible name even though canonicalization rewrites it.
+        let lexical = self.lexical_normalize(path);
+        for candidate in [&lexical, &resolved] {
+            if let Some(denied) = self.deny_reason(candidate) {
                 return Err(PathDenied::SecretRead {
-                    path: resolved,
-                    reason: "protected home directory".into(),
+                    path: resolved.clone(),
+                    reason: denied,
                 });
             }
         }
-        if let Some(name) = resolved.file_name().and_then(|n| n.to_str()) {
+        Ok(resolved)
+    }
+
+    fn deny_reason(&self, candidate: &Path) -> Option<String> {
+        for prefix in &self.denied_read_prefixes {
+            if candidate.starts_with(prefix) {
+                return Some("protected home directory".into());
+            }
+        }
+        if let Some(name) = candidate.file_name().and_then(|n| n.to_str()) {
             for suffix in &self.denied_read_suffixes {
                 if name.ends_with(suffix.as_str()) {
-                    return Err(PathDenied::SecretRead {
-                        path: resolved,
-                        reason: "secret file pattern".into(),
-                    });
+                    return Some("secret file pattern".into());
                 }
             }
         }
-        Ok(resolved)
+        None
+    }
+
+    /// Lexical normalization only (`..`/`.` resolved, no filesystem access,
+    /// no symlink following). Relative paths anchor to the workspace root.
+    pub fn lexical_normalize(&self, path: &Path) -> PathBuf {
+        let absolute = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            self.writable_roots
+                .first()
+                .cloned()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(path)
+        };
+        let mut lexical = PathBuf::new();
+        for component in absolute.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    lexical.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => lexical.push(other.as_os_str()),
+            }
+        }
+        lexical
     }
 
     pub fn check_write(&self, path: &Path) -> Result<PathBuf, PathDenied> {
@@ -230,6 +251,21 @@ mod tests {
         assert!(policy.check_read(&temp.path().join(".env")).is_err());
         assert!(policy.check_read(&temp.path().join("deploy.pem")).is_err());
         assert!(policy.check_read(&temp.path().join("src/main.rs")).is_ok());
+    }
+
+    #[test]
+    fn symlinked_secret_stays_denied_by_visible_name() {
+        let temp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let policy = policy_in(&temp);
+        let plain = temp.path().join("plain.txt");
+        std::fs::write(&plain, "not secret").unwrap_or_else(|e| panic!("{e}"));
+        let link = temp.path().join(".env");
+        std::os::unix::fs::symlink(&plain, &link).unwrap_or_else(|e| panic!("{e}"));
+        // Canonical target is an innocuous name — the lexical .env must
+        // still deny the read.
+        assert!(policy.check_read(&link).is_err());
+        // Reading the plain target directly remains allowed.
+        assert!(policy.check_read(&plain).is_ok());
     }
 
     #[test]
