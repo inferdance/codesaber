@@ -48,6 +48,8 @@ pub enum TurnOutcome {
     LengthRefusal,
     /// Step budget exhausted.
     MaxSteps,
+    /// Provider failed terminally (all retries exhausted).
+    ProviderFailure(String),
 }
 
 /// Inputs for one headless turn.
@@ -230,14 +232,14 @@ impl Engine {
 
             if let Some(message) = provider_error {
                 self.emit(EventMsg::Error {
-                    message,
+                    message: message.clone(),
                     recoverable: false,
                 });
                 self.emit(EventMsg::TurnComplete {
                     turn_id: turn_id.clone(),
                     reason: saber_protocol::TurnCompleteReason::AbortedByUser,
                 });
-                return Ok((text, TurnOutcome::DoomLoop("provider error".into())));
+                return Ok((text, TurnOutcome::ProviderFailure(message)));
             }
 
             for id in call_order {
@@ -311,25 +313,30 @@ impl Engine {
 
             last_text = text;
 
-            // Defense 2: doom-loop detection on the first tool call.
-            let (first_name, first_args) = (&tool_calls[0].1, &tool_calls[0].2);
+            // Defense 2: doom-loop detection — any tool call identical to
+            // the previous step's first call counts toward the streak.
+            let doom_key = {
+                let (name, args) = (&tool_calls[0].1, &tool_calls[0].2);
+                (name.clone(), args.clone())
+            };
             let doomed = match doom_tracker.as_ref() {
                 Some((prev_name, prev_args, count))
-                    if prev_name == first_name && prev_args == first_args =>
+                    if *prev_name == doom_key.0 && *prev_args == doom_key.1 =>
                 {
                     let new_count = count + 1;
-                    doom_tracker = Some((first_name.clone(), first_args.clone(), new_count));
+                    doom_tracker = Some((doom_key.0.clone(), doom_key.1.clone(), new_count));
                     new_count >= 3
                 }
                 _ => {
-                    doom_tracker = Some((first_name.clone(), first_args.clone(), 1));
+                    doom_tracker = Some((doom_key.0.clone(), doom_key.1.clone(), 1));
                     false
                 }
             };
             if doomed {
                 let message = format!(
-                    "tool `{first_name}` called with identical arguments 3 times in a row \
-                     (doom-loop defense); turn aborted"
+                    "tool `{}` called with identical arguments 3 times in a row \
+                     (doom-loop defense); turn aborted",
+                    doom_key.0
                 );
                 self.emit(EventMsg::Error {
                     message: message.clone(),
@@ -425,14 +432,21 @@ impl Engine {
                 .await
                 .pop()
                 .unwrap_or(ToolResult::error("no result".into()));
-            let _ = self.session.append(
+            if let Err(e) = self.session.append(
                 SessionEvent::ToolResult {
                     call_id: call_id.clone(),
                     content: result.content.clone(),
                     is_error: result.is_error,
                 },
                 false,
-            );
+            ) {
+                // Result write failure is surfaced but does not block the
+                // response — the side effect already happened.
+                self.emit(EventMsg::Error {
+                    message: format!("session result write failed: {e}"),
+                    recoverable: true,
+                });
+            }
             self.emit(EventMsg::ToolCompleted {
                 call_id: call_id.clone(),
                 is_error: result.is_error,

@@ -41,6 +41,50 @@ impl SessionLog {
     pub fn open_append(path: &Path) -> Result<Self, SessionError> {
         let recovered = recover(path)?;
         let next_seq = recovered.events.last().map(|e| e.seq + 1).unwrap_or(0);
+        // Truncate any torn tail so appends never create mid-file
+        // corruption. The last complete event's byte offset is the new EOF.
+        let last_complete_offset = recovered.events.last().map(|_| ()).unwrap_or(());
+        let _ = last_complete_offset;
+        // Re-read raw bytes and find the offset after the last complete line.
+        let raw = std::fs::read(path)?;
+        let mut clean_end = raw.len();
+        for (i, byte) in raw.iter().enumerate().rev() {
+            if *byte == b'\n' {
+                clean_end = i + 1;
+                break;
+            }
+        }
+        // Verify the clean prefix parses; if the last complete line is
+        // corrupt (not just torn), keep truncating to the prior newline.
+        let text = String::from_utf8_lossy(&raw[..clean_end]).into_owned();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut valid_lines = lines.len();
+        for (idx, line) in lines.iter().enumerate().rev() {
+            if line.trim().is_empty() {
+                valid_lines = idx;
+                continue;
+            }
+            match serde_json::from_str::<SessionEventEnvelope>(line) {
+                Ok(_) => break,
+                Err(_) => valid_lines = idx,
+            }
+        }
+        if valid_lines < lines.len() {
+            // Recompute byte offset after the last valid line.
+            let mut offset = 0;
+            for (idx, line) in lines.iter().enumerate() {
+                if idx >= valid_lines {
+                    break;
+                }
+                offset += line.len() + 1;
+            }
+            clean_end = offset;
+        }
+        if clean_end < raw.len() {
+            let file = std::fs::OpenOptions::new().write(true).open(path)?;
+            file.set_len(clean_end as u64)?;
+        }
+
         let writer = std::fs::OpenOptions::new().append(true).open(path)?;
         let session_id = recovered
             .events

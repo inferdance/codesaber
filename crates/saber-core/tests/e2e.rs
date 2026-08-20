@@ -270,7 +270,7 @@ async fn provider_failure_terminates_turn_cleanly() {
         })
         .await
         .unwrap_or_else(|e| panic!("{e}"));
-    assert!(matches!(outcome, TurnOutcome::DoomLoop(m) if m.contains("provider error")));
+    assert!(matches!(outcome, TurnOutcome::ProviderFailure(m) if m.contains("provider error")));
     let events = fixture
         .engine_events
         .lock()
