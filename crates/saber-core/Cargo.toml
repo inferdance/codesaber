@@ -14,12 +14,12 @@ workspace = true
 saber-protocol = { workspace = true }
 saber-provider = { workspace = true }
 saber-tools = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
 futures = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
+serde = { workspace = true }
 tempfile = { workspace = true }
 anyhow = { workspace = true }
