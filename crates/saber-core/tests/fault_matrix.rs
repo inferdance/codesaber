@@ -27,7 +27,7 @@ impl Provider for CountingProvider {
         &self,
         _request: ChatRequest,
     ) -> futures::future::BoxFuture<'static, Result<ProviderStream, ProviderError>> {
-        let index = self.next.fetch_add(1, Ordering::SeqCst);
+        let _index = self.next.fetch_add(1, Ordering::SeqCst);
         let events = self.events.clone();
         // Repeat the same step forever (tests drive termination by outcome).
         Box::pin(futures::future::ready(Ok(
@@ -191,7 +191,7 @@ async fn steering_messages_are_delivered_before_next_request() {
             &self,
             _request: ChatRequest,
         ) -> futures::future::BoxFuture<'static, Result<ProviderStream, ProviderError>> {
-            let index = self.next.fetch_add(1, Ordering::SeqCst);
+            let _index = self.next.fetch_add(1, Ordering::SeqCst);
             let events = if index == 0 {
                 call_tool("bash", "{\"command\": \"echo step-one\"}")
             } else {

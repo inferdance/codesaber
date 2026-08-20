@@ -55,7 +55,7 @@ impl Provider for ScriptedProvider {
     }
 }
 
-fn tool_call(id: &str, name: &str, args: serde_json::Value) -> ProviderEvent {
+fn tool_call(id: &str, name: &str, _args: serde_json::Value) -> ProviderEvent {
     ProviderEvent::ToolCallStart {
         id: id.into(),
         name: name.into(),
