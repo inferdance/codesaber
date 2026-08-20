@@ -11,3 +11,17 @@ description = "Tool contracts, registry, conflict-aware scheduler, and the built
 workspace = true
 
 [dependencies]
+saber-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+grep = { workspace = true }
+ignore = { workspace = true }
+globset = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
