@@ -42,6 +42,7 @@
 - 验收:两 adapter 对同一 mock 会话产出归一化的内部事件流;故障注入测试通过。
 
 ### T4 saber-tools(2.5d)
+- **统一路径策略服务(先行)**:read/write/edit/grep/glob/bash 共享同一个路径判定——读侧 deny(`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.kube`、`**/.env`)、写侧白名单(cwd + `~/.codesaber/`),单点实现单点测试,杜绝各工具漂移;
 - `ToolDefinition` 契约:`name/description/schema/execute + concurrency_safe/timeout_ms/permission_rule/render(可选)`;Registry(IndexMap 保序);调度器 v0:读写两类资源冲突检测,读并行写串行;
 - 六工具:
   - `bash`:**经 T4b Seatbelt 执行**、进程树超时杀、输出头尾截断 + 全量落 `~/.codesaber/truncations/`(7 天);
@@ -58,17 +59,19 @@
 - **M0 全禁网**(策略不写任何 network allow 即默认拒绝):LLM API 调用在沙箱外引擎主进程,子进程无需网络;M1+ 需要装依赖时再评估 codex 式本地代理;
 - 子进程环境白名单(只传 PATH/HOME/LANG/TMPDIR),引擎密钥不进子进程;沙箱只覆盖 bash 等子进程执行,write/edit 的边界由引擎路径策略保证(见 T4);
 - M1 的权限网关/审批升级在此之上接入(本任务只做强制边界,不做审批)。
-- 验收:DoD#6 沙箱边界测试三件套(cwd 外写被拒 / 网络被拒 / env 无密钥)+ `.ssh`/`.env` 读被拒。
+- **沙箱拒绝的结构化输出**:拒绝经统一格式呈现给模型("路径 X 不可写,可用范围……,请改用……"),防重试死循环;**相同拒绝指纹连续出现 2 次即停止自动重试**,直接给出解决建议;
+- 验收:DoD#6 沙箱边界测试(cwd 外写被拒 / 网络被拒 / env 无密钥 / `.ssh`/`.env` 读被拒)**+ 正向通过性:默认 workspace-write 档下 Rust/Node/Python 的 build/test 各跑通一条**(只测拦截的沙箱会把可用性做成 0 分);环境白名单按真实失败补充(xcodebuild/rustup 所需变量),不预防式放宽。
 
 ### T5 saber-core loop + session(2.5d)
 - `SessionManager`:JSONL 追加写,**WAL 语义**——工具副作用执行前同步落 `tool_call` intent(fsync)、执行后落 result,其余事件(assistant delta 等)批量 flush;启动重建投影;恢复时显式识别"有 intent 无 result"的未完成调用;会话目录 `~/.codesaber/sessions/<ts>-<id>/`;
 - turn/step loop:`run_turn`(steering 队列接口先留,headless 无生产者)、三防线(length 拒执行/doom-loop 3 次转终止+报错/stop hook 挂点);
 - prompt assembler v1:静态段(身份/输出规范,参照 Claude Code 骨架)+ 环境块(cwd/git/平台/日期)+ 工具节(动态生成)+ AGENTS.md(祖先链聚合,兼容 CLAUDE.md);静态前动态后排序;
 - token 水位事件(TokenCount);溢出→报错退出(M0 不做 compact,compaction 是 M1)。
-- 验收:mock 集成测试五场景(DoD#5);崩溃恢复测试覆盖工具执行边界(kill -9 于"intent 已落、副作用已发生、result 未落"时刻,重建后标记未完成调用而非重放)+ 尾行撕裂截断。
+- 验收:mock 集成测试五场景(DoD#5);**离线 E2E:真实临时仓库(git init + 若干文件)上 MockProvider 驱动 read→edit→bash(跑测试)→final 全链,快照锁定完整事件序列**;崩溃恢复测试覆盖工具执行边界(kill -9 于"intent 已落、副作用已发生、result 未落"时刻,重建后标记未完成调用而非重放)+ 尾行撕裂截断;**故障矩阵:SIGINT 取消 / symlink 逃逸 / stale file(编辑期间外部修改)/ 子进程孙进程清理**。
 
 ### T6 saber-cli headless(1d)
 - `saber exec -p "<prompt>" [--json] [--model]`(`--output-schema <path>` 挪 M1:M0 不实现,避免无验收的半成品开关);非交互权限策略 v0 = **bash 由 T4b Seatbelt 强制,write/edit 由引擎路径策略强制**(禁网+环境白名单见 T4b/T4);敏感路径(.env/秘钥)在 read/write/edit 工具层硬拒绝(提示层,与强制层双保险);
+- `saber debug sandbox -- <cmd>` 诊断子命令(直接在策略内跑命令并输出拒绝原因;沙箱排障的一等入口);
 - 退出码与事件流契约文档化。
 - 验收:DoD#1 端到端。
 

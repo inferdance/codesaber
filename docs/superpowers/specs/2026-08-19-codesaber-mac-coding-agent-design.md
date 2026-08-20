@@ -164,9 +164,21 @@ codesaber/
 
 - **M0 引擎骨架**:workspace + protocol + provider 两家(OpenAI 兼容 + Anthropic)+ loop + 6 工具 + JSONL 会话(WAL 语义)+ **最小 Seatbelt 沙箱(写边界+禁网+子进程环境白名单+deny-read 扩充至 ~/.aws、~/.gnupg、~/.kube 与 Keychain CLI)** + **沙箱拒绝的结构化输出**(模型可理解的"路径不可写,请……"提示,防重试死循环);`saber exec` 完成"读→改→跑测试";质量门禁全套上线(lints/cargo-deny/insta)。验收:Harbor 10 题基线分。
 - **M1 可用 CLI**:TUI + steering + 权限三档(**full 档零摩擦:一次设置永不打扰;审批 UI 降级为 headless 可配置规则,不阻塞**) + 模式×规则语义(模式是规则空间的基底,非叠加硬开关)+ 最小域白名单直连(防 M0 禁网与 M3 egress proxy 之间的全有或全无空窗)+ compaction 两层 + resume + headless(`--output-schema <path>` 结构化输出;ask→deny 报错自带可操作的规则配置提示)+ 第三家 provider(Ollama)+ **failover** + **`saber replay` 回放器** + OTel trace。验收:日常自用一天不打断;夜间回归无退化。
-- **M1.5 核心打磨(先于一切 GUI)**:dogfooding——本人以 saber 为日常主力工具连续一周;prompt/工具描述/容错链迭代全部由 Harbor 跑分驱动;compaction/steering/重试实战调优;**协议 v1 冻结(兼容性进 CI)——核心稳定即协议稳定,App 作为第一个外部消费者吃冻结版**。验收:**Terminal-Bench 2.0 ≥40%**;夜间回归零退化;full 档下主观体验"感觉不到权限系统存在"。
+- **M1.5 核心打磨(先于一切 GUI)**:dogfooding——本人以 saber 为日常主力工具连续一周(≥7 天、≥20 个真实任务、≥3 个仓库);prompt/工具描述/容错链迭代全部由 Harbor 跑分驱动;compaction/steering/重试实战调优;**jobs 最小三件套提前至此**(run_in_background/job_output/job_kill——真实 build 常超时;通知/PTY/任务中心仍后置);**`saber doctor`**(配置来源/key 存在性/Seatbelt 可用性/数据目录,永不打印 key 值;新 Mac 安装到首个只读 turn ≤3 分钟);**协议 v1 冻结(兼容性进 CI)——核心稳定即协议稳定,App 作为第一个外部消费者吃冻结版**。验收:**Terminal-Bench 2.0 ≥40%**(固定模型/预算/timeout/attempts=3,同时报告耗时与成本,不用重试买分);夜间回归零退化;full 档下主观体验"感觉不到权限系统存在";**交互 SLO:启动→TurnStarted p95<100ms、mock provider 请求发起 p95<150ms、provider 首字节→上屏<50ms、文本增量 16-50ms 合帧(键盘输入立即旁路)、`--json` 下 stdout 零污染(无 ANSI/进度/panic 文本)、`saber --help` 冷启动 p95<150ms**;dogfood 零误改/零数据丢失/零孤儿进程,≥90% 任务无需换回其他 agent。
+
+#### M1.5 可用性 checklist("能跑分但日常不好用"的反例清单)
+
+- [ ] 脏工作区 / 用户同时编辑 / symlink / 非 git 仓库 / 超长输出 全部实测,不只测干净容器;
+- [ ] edit fallback 误改率受控(真实 corpus 验证六级容错足够,失败必须显式报错,不许"成功但改错位置");
+- [ ] 重试只在未提交 intent 的稳定边界发生——partial stream 不重试、不拼接两个模型的半截响应(故障注入测试钉死);
+- [ ] compaction 测"遗忘约束"(连续 3 次压缩后仍完成任务、孤儿 tool result 为 0),不只测不爆窗;
+- [ ] 权限:full 档零打扰 ∧ 默认档不步步弹窗(只读白名单放行);
+- [ ] TUI:输入优先于渲染、stdout 纯度、终端异常恢复(resize/中文 IME/大段粘贴);
+- [ ] 工具输出治理:短题正常 ∧ 长任务不因上下文灌水变笨;
+- [ ] "完成"必须携带验证状态(测试失败/未验证项/残留 diff 显式报告);
+- [ ] 核心主链路稳定前,不加 provider/MCP/子代理扩大故障面。
 - **M2 Mac App(前置条件:M1.5 验收通过)**:saber-server 常驻 + Swift 协议生成 + App 四区 + worktree 并行会话 + 通知 + `read_image`/App 粘贴图片。验收:App 与 CLI 互通同一会话;签名公证发布。
-- **M3 差异化纵深**:默认工作流包(draw/strike/sheathe,以 skills+plan-mode+profile 实现,可卸载)+ jobs + MCP(延迟加载默认)+ Skills(SKILL.md 双通道)+ 成本看板 + egress proxy + App inspector tab + hooks(exec 式六事件)。验收:**Terminal-Bench 2.0 ≥55%**;App 内完成一次并行双会话真实任务;**禁用工作流包后基座完整可用,TB2.0 对照分差 ≤3%**。
+- **M3 差异化纵深**:默认工作流包(draw/strike/sheathe,以 skills+plan-mode+profile 实现,可卸载)+ jobs 完全体(通知/PTY/任务中心;三件套已提前至 M1.5)+ MCP(延迟加载默认)+ Skills(SKILL.md 双通道)+ 成本看板 + egress proxy + App inspector tab + hooks(exec 式六事件)。验收:**Terminal-Bench 2.0 ≥55%**;App 内完成一次并行双会话真实任务;**禁用工作流包后基座完整可用,TB2.0 对照分差 ≤3%**。
 
 ### 5.3 明确不做(YAGNI)
 
@@ -224,7 +236,7 @@ License:**Apache-2.0**——LICENSE 文件与 README 同步落地于 M0-T8(设�
 | 17 | 多模态:M2 给 `read_image` 工具 + App 粘贴图片;不做 audio/video |
 | 18 | Skills 双通道(pi 式):系统提示词只常驻清单(name+description),正文由模型 read 自取;`/skill-name` 手动展开 |
 | 19 | 调试:M1 `saber replay`(快进/过滤/事件树,事件日志直接投影);M3 App inspector tab |
-| 20 | 版本:协议独立 semver,v1 于 M2 冻结、兼容性进 CI;引擎/CLI/App 同 repo 同 tag;0.x 每周 tag,M3 后按需 |
+| 20 | 版本:协议独立 semver,v1 于 M1.5 冻结(核心稳定即协议稳定;2026-08-19 路线图重排,原定 M2)、兼容性进 CI;引擎/CLI/App 同 repo 同 tag;0.x 每周 tag,M3 后按需 |
 | 21 | License:Apache-2.0(LICENSE 文件与 README 随 M0-T8 落地) |
 | 22 | plan 载体:`.codesaber/plans/<session>-<slug>.md` 结构化 markdown(frontmatter status:drawn/striking/shipped);draw 产出、strike 消费、sheathe 归档,跨会话可复用、可 git 提交 |
 | 23 | App 最低系统版本 macOS 14+(SwiftUI Observation 基线) |
