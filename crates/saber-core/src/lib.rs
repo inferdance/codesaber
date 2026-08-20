@@ -436,8 +436,8 @@ impl Engine {
     }
 }
 
-/// Prompt assembly v1: static identity + environment block + tool section
-/// + AGENTS.md (pi-style minimalism — tool rules live in tool
+/// Prompt assembly v1: static identity, environment block, tool section,
+/// and AGENTS.md (pi-style minimalism — tool rules live in tool
 /// descriptions, the harness prompt stays tiny).
 pub fn assemble_system_prompt(
     identity: &str,
