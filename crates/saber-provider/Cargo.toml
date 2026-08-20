@@ -21,3 +21,4 @@ reqwest = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }
+# triggered by dep cleanup
