@@ -265,23 +265,25 @@ impl BashExecutor for DirectExecutor {
                     // Belt and braces: direct SIGKILL unblocks wait() on
                     // every unix; the group kill then reaps grandchildren
                     // (best-effort — the fault matrix owns verifying it).
-                    eprintln!("[saber-bash-dbg] timeout fired, pid={pid:?}");
-                    let kill_result = child.start_kill();
-                    eprintln!("[saber-bash-dbg] start_kill={kill_result:?}");
+                    let _ = child.start_kill();
                     kill_process_group(pid).await;
-                    eprintln!("[saber-bash-dbg] group kill done");
                     let status = child.wait().await;
-                    eprintln!("[saber-bash-dbg] second wait={status:?}");
                     (status.map(|s| s.code()).unwrap_or(None), true)
                 }
             };
 
-            let (mut stdout_view, stdout_spill_path) = out_task
-                .await
-                .map_err(|e| format!("stdout collector: {e}"))?;
-            let (mut stderr_view, stderr_spill_path) = err_task
-                .await
-                .map_err(|e| format!("stderr collector: {e}"))?;
+            // Orphaned grandchildren can keep pipes open; never let them
+            // stall the tool result — take what the windows hold.
+            let (mut stdout_view, stdout_spill_path) =
+                match tokio::time::timeout(Duration::from_secs(3), out_task).await {
+                    Ok(joined) => joined.map_err(|e| format!("stdout collector: {e}"))?,
+                    Err(_) => (HeadTail::default(), None),
+                };
+            let (mut stderr_view, stderr_spill_path) =
+                match tokio::time::timeout(Duration::from_secs(3), err_task).await {
+                    Ok(joined) => joined.map_err(|e| format!("stderr collector: {e}"))?,
+                    Err(_) => (HeadTail::default(), None),
+                };
             // Drop spill files for streams that stayed inside the window.
             let stdout_kept = stdout_view.truncated();
             let stderr_kept = stderr_view.truncated();
@@ -310,15 +312,22 @@ impl BashExecutor for DirectExecutor {
 
 async fn kill_process_group(pid: Option<u32>) {
     let Some(pid) = pid else { return };
-    // /bin/kill -9 -<pgid>: no unsafe, reaps the whole tree. Bounded so a
-    // broken kill binary can never stall the timeout path.
+    // /bin/kill -9 -- -<pgid>: no unsafe, reaps the whole tree. The `--`
+    // keeps every kill flavor from misparsing the negative pid; bounded so
+    // a broken kill binary can never stall the timeout path.
     let group_kill = tokio::process::Command::new("/bin/kill")
         .arg("-9")
+        .arg("--")
         .arg(format!("-{pid}"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    let _ = tokio::time::timeout(Duration::from_secs(2), group_kill).await;
+    match tokio::time::timeout(Duration::from_secs(2), group_kill).await {
+        Ok(Ok(status)) if status.success() => {}
+        outcome => {
+            eprintln!("[saber-bash] group kill did not confirm success: {outcome:?}");
+        }
+    }
 }
 
 pub async fn run_bash(
