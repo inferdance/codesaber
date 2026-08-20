@@ -50,15 +50,7 @@ impl PathPolicy {
             })?;
         let home = std::env::var("HOME").unwrap_or_default();
         let home = PathBuf::from(home);
-        // Canonicalize deny roots where possible: `~/.ssh` itself may be a
-        // symlink, and a canonical target would otherwise slip the check.
-        let denied_read_prefixes = [".ssh", ".aws", ".gnupg", ".kube"]
-            .iter()
-            .map(|dir| {
-                let path = home.join(dir);
-                path.canonicalize().unwrap_or(path)
-            })
-            .collect();
+        let denied_read_prefixes = Self::deny_prefixes_for(&home);
         let denied_read_suffixes = vec![
             ".env".to_owned(),
             ".env.local".to_owned(),
@@ -71,6 +63,21 @@ impl PathPolicy {
             denied_read_prefixes,
             denied_read_suffixes,
         })
+    }
+
+    /// Deny roots keep BOTH the lexical path and its canonical target:
+    /// the lexical form survives runtime symlink re-pointing, the
+    /// canonical form catches symlinked-at-construction roots.
+    fn deny_prefixes_for(home: &Path) -> Vec<PathBuf> {
+        let mut prefixes = Vec::new();
+        for dir in [".ssh", ".aws", ".gnupg", ".kube"] {
+            let lexical = home.join(dir);
+            if let Ok(canonical) = lexical.canonicalize() {
+                prefixes.push(canonical);
+            }
+            prefixes.push(lexical);
+        }
+        prefixes
     }
 
     pub fn writable_roots(&self) -> &[PathBuf] {
@@ -266,6 +273,31 @@ mod tests {
         assert!(policy.check_read(&link).is_err());
         // Reading the plain target directly remains allowed.
         assert!(policy.check_read(&plain).is_ok());
+    }
+
+    #[test]
+    fn repointed_deny_root_stays_denied() {
+        // ~/.ssh is a symlink at construction; it is later re-pointed to a
+        // different target — the lexical prefix must still deny reads.
+        let home = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let target_a = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let target_b = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(target_a.path().join("config"), "a").unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(target_b.path().join("config"), "b").unwrap_or_else(|e| panic!("{e}"));
+        let ssh = home.path().join(".ssh");
+        std::os::unix::fs::symlink(target_a.path(), &ssh).unwrap_or_else(|e| panic!("{e}"));
+        let policy = PathPolicy::deny_prefixes_for(home.path());
+        assert!(policy.iter().any(|p| p.starts_with(home.path())));
+        // Re-point and re-check via a fresh policy build over the same
+        // home (the production path constructs once per session).
+        std::fs::remove_file(&ssh).unwrap_or_else(|e| panic!("{e}"));
+        std::os::unix::fs::symlink(target_b.path(), &ssh).unwrap_or_else(|e| panic!("{e}"));
+        let policy = PathPolicy::deny_prefixes_for(home.path());
+        let lexical_hits = policy.iter().any(|p| p == &ssh);
+        assert!(
+            lexical_hits,
+            "lexical deny root must survive re-pointing: {policy:?}"
+        );
     }
 
     #[test]

@@ -123,7 +123,7 @@ pub fn cleanup_stale_truncations(data_dir: &Path, retention: Duration) -> std::i
     Ok(removed)
 }
 
-fn sanitize(component: &str) -> String {
+pub fn sanitize(component: &str) -> String {
     component
         .chars()
         .map(|c| {
