@@ -191,7 +191,7 @@ async fn steering_messages_are_delivered_before_next_request() {
             &self,
             _request: ChatRequest,
         ) -> futures::future::BoxFuture<'static, Result<ProviderStream, ProviderError>> {
-            let _index = self.next.fetch_add(1, Ordering::SeqCst);
+            let index = self.next.fetch_add(1, Ordering::SeqCst);
             let events = if index == 0 {
                 call_tool("bash", "{\"command\": \"echo step-one\"}")
             } else {
