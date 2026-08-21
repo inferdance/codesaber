@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@saber/ai": ["../ai/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "../ai/src/**/*.ts"]
+}
