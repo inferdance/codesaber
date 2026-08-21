@@ -1,9 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-
-# Install saber from a release binary or build from source.
-# For evaluation, we build from the repo checkout.
-cd /workspace/codesaber
-cargo build --release -p saber-cli
-cp target/release/saber /usr/local/bin/saber
-saber --version

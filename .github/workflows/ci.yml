@@ -4,70 +4,36 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    # Nightly: re-runs all gates so new cargo-deny advisories are caught
-    # even when the repo is quiet. Schema-sync joins PR + nightly with T2.
-    - cron: "0 19 * * *"
-
-env:
-  CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: fmt / clippy / nextest / deny / shear
+  test:
+    name: lint + test + build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
         with:
-          components: clippy, rustfmt
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Format
-        run: cargo fmt --all --check
-
-      - name: Clippy (deny warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Install cargo-nextest & cargo-deny
-        uses: taiki-e/install-action@v2
+          version: 9
+      - uses: actions/setup-node@v4
         with:
-          tool: cargo-nextest,cargo-deny
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
 
-      - name: Unit & integration tests (nextest)
-        run: cargo nextest run --workspace
-
-      - name: Doc tests (nextest does not run these)
-        run: cargo test --workspace --doc
-
-      - name: cargo-deny (advisories / bans / licenses / sources)
-        run: cargo deny check
-
-      - name: Install cargo-shear
-        run: cargo install cargo-shear --locked
-
-      - name: Unused dependencies (cargo-shear)
-        run: cargo shear
-
-  # schema-sync lands with M0-T2 (saber-protocol JSON Schema artifacts);
-  # macOS sandbox tests land with M0-T4b and get a macos-latest job then.
-
-  macos-sandbox:
+  sandbox:
     name: seatbelt tests (macos)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+      - uses: pnpm/action-setup@v4
         with:
-          tool: cargo-nextest
-
-      - name: Sandbox tests
-        run: cargo nextest run -p saber-sandbox
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @saber/sandbox test
