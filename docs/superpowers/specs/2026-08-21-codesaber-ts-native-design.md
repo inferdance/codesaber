@@ -32,35 +32,75 @@
 
 ```
 packages/
-├── core/               # Effect 运行时 + 安全不变量
+├── core/               # 引擎 + 安全不变量(纯 TS,无 UI)
 │   ├── src/
-│   │   ├── layer/      # Effect Layer:依赖注入容器
-│   │   │   ├── provider.ts   # ProviderLayer(可替换 AI 后端)
-│   │   │   ├── tools.ts      # ToolRegistryLayer(六工具注册)
-│   │   │   ├── policy.ts     # PathPolicyLayer(路径策略)
-│   │   │   └── session.ts    # SessionLayer(WAL JSONL)
-│   │   ├── schema/     # Zod schemas:所有边界类型的运行时定义
-│   │   │   ├── tools.ts      # 每个工具的参数 schema
-│   │   │   ├── events.ts     # 引擎事件 schema
-│   │   │   └── config.ts     # 配置 schema
 │   │   ├── engine/     # turn/step loop(三防线)
-│   │   ├── edit/       # 编辑容错(fast-diff + 匹配策略)
-│   │   └── policy/     # 路径策略(pathe + 安全边界)
-├── ai/                 # LLM 接入(SSE 手写——性能热点)
-│   ├── src/
-│   │   ├── sse.ts            # SSE 解析(~80 行,保留手写)
-│   │   ├── providers/
-│   │   │   ├── openai.ts     # OpenAI 兼容
-│   │   │   ├── anthropic.ts  # Anthropic Messages
-│   │   │   └── mock.ts       # 测试用
-│   │   └── retry.ts          # 指数退避
-├── server/             # Fastify + WebSocket
-│   └── src/main.ts
-├── cli/                # saber 命令
-│   └── src/main.ts
-├── web/                # Web UI(M1)
-└── sandbox/            # Seatbelt(macOS)
-    └── src/profile.ts
+│   │   ├── tools/      # 六工具 + 统一路径策略 + 编辑容错
+│   │   ├── session/    # WAL JSONL 会话
+│   │   └── schema/     # Zod schemas(事件/工具参数/配置)
+├── ai/                 # LLM 接入(SSE 手写)
+│   └── src/
+│       ├── sse.ts      # SSE 解析(~80 行)
+│       ├── providers/  # OpenAI 兼容 / Anthropic / mock
+│       └── retry.ts    # 指数退避
+├── server/             # Fastify + WebSocket(唯一事实源)
+│   └── src/
+│       ├── main.ts     # 启动入口
+│       ├── session-manager.ts  # 每会话一个序列化 mailbox
+│       └── protocol.ts # 命令/事件 WebSocket 协议
+├── ui-shared/          # ★ 共享数据模型(Web 和 TUI 共用)
+│   └── src/
+│       ├── types.ts    # 事件/命令/投影类型定义
+│       ├── projection.ts # 事件折叠 → 当前状态(fold 函数)
+│       ├── hooks.ts    # useSession(client-agnostic 订阅钩子)
+│       └── client.ts   # WebSocket 客户端(连接/重连/订阅)
+├── ui-web/             # React DOM(浏览器界面)
+│   └── src/            # 只做渲染,零业务逻辑
+├── ui-tui/             # ink(终端界面)
+│   └── src/            # 只做渲染,零业务逻辑
+└── cli/                # saber exec(headless)
+    └── src/main.ts
+```
+
+### 共享数据模型的关键设计
+
+**Web 和 TUI 共用 `ui-shared`,不共用渲染代码**:
+
+```typescript
+// packages/ui-shared/src/types.ts — 两个前端都 import 这一份
+
+// 引擎事件(服务端发出,前端只读)
+export type SaberEvent =
+  | { type: "turn_started"; turnId: string; sessionId: string; seq: number }
+  | { type: "assistant_delta"; turnId: string; text: string; seq: number }
+  | { type: "tool_started"; callId: string; name: string; seq: number }
+  | { type: "tool_completed"; callId: string; content: string; isError: boolean; seq: number }
+  | { type: "turn_complete"; turnId: string; reason: string; seq: number }
+  | { type: "error"; message: string; seq: number };
+
+// 前端命令(前端发出,带 commandId 幂等)
+export type SaberCommand =
+  | { type: "prompt"; commandId: string; text: string }
+  | { type: "steer"; commandId: string; text: string }
+  | { type: "abort"; commandId: string; turnId: string }
+  | { type: "approve"; commandId: string; requestId: string; granted: boolean };
+
+// 投影(事件折叠后的当前状态——前端渲染这个)
+export interface SessionProjection {
+  sessionId: string;
+  messages: Array<{ role: string; content: string; toolCalls?: ToolCallView[] }>;
+  isRunning: boolean;
+  currentTurn?: string;
+  usage: { inputTokens: number; outputTokens: number; costUsd: number };
+}
+```
+
+**投影函数是纯函数**(同一段事件 → 同一个状态):
+```typescript
+// packages/ui-shared/src/projection.ts
+export function projectSession(events: SaberEvent[]): SessionProjection {
+  // fold 事件 → 状态,两个前端调用同一个函数
+}
 ```
 
 ## 3. 安全不变量(从 Rust 版继承,TS 实现)
@@ -178,37 +218,44 @@ const result = await execa("bash", ["-c", command], {
 ## 4. 架构分层
 
 ```
-┌─ 用户层:AGENTS.md / 用户 skills / MCP
-├─ 默认工作流包(可换可删):draw/strike/sheathe
-├─ 基座机制层(零意见):
-│   Effect Layer 注入 → Engine(loop) → Tools(6) → Policy(路径)
-│   → Session(WAL) → Providers(AI) → Sandbox(Seatbelt)
-└─ 纪律:Zod 运行时校验 · 错误进流不抛异常 · 只手写性能热点
+┌─ 前端层:ui-web(React DOM) · ui-tui(ink) · cli(headless)
+│   └─ 共享:ui-shared(事件/命令/投影类型 + WebSocket 客户端)
+├─ 服务层:server(Fastify + WebSocket,唯一事实源)
+│   └─ SessionManager:每会话一个序列化 mailbox + WAL
+├─ 引擎层:core(Engine loop + Tools + Policy + Session)
+├─ 模型层:ai(Provider 抽象 + SSE 解析 + retry)
+└─ 纪律:Zod 运行时校验 · 命令/事件分离(CQRS) · 前端零业务逻辑
 ```
 
-## 5. 前端策略
+## 5. 前端策略(zcode 模式 + TUI)
 
-**Web-first(zcode 模式)**:
-- Fastify server 在 localhost:3080
-- 浏览器打开即是 App(远程/本地同一体验)
-- PWA manifest(可添加到 Dock)
-- 原生壳(Tauri/SwiftUI)是 M3+ 的打磨项,不是 MVP 需求
+**一份 UI 逻辑,两份渲染**:
+- `ui-shared`:共享的数据模型(事件类型/命令协议/投影函数/WebSocket 客户端)
+- `ui-web`:React DOM 渲染(浏览器打开 localhost:3080)
+- `ui-tui`:ink 渲染(终端 `saber` 命令)
+- 两者看到同一份事件流,渲染同一份投影,实时同步
+
+**会话跨前端同步**:
+- TUI 里跑了一半 Esc 退出
+- 浏览器打开,看到同一个会话,继续
+- 前端只发命令(带 commandId 幂等),服务端回事件(权威)
+- 断线重连:客户端发 `subscribe { since: lastSeq }`,服务端返回增量
 
 ## 6. 测试策略
 
 - **Vitest**:单元+集成
 - **Zod schema 校验**:每个工具的参数在运行时校验(坏参数直接拒绝,不是 catch 后 Null)
-- **Effect Layer mock**:测试时 `Layer.succeed` 一行替换真实 provider
 - **安全边界测试**:路径逃逸/symlink/秘钥读取/沙箱越界(从 Rust 版 119 个测试继承断言)
+- **多客户端同步测试**:两个 WebSocket 客户端连接同一会话,断线重连后投影一致
 - **CI**:GitHub Actions(ubuntu + macOS for sandbox tests)
 
-## 7. 里程碑(重新定义)
+## 7. 里程碑
 
-- **M0**:TS monorepo + Effect 骨架 + 核心安全不变量(路径策略/Edit/WAL/沙箱)+ CLI `saber exec` headless + 测试
-- **M1**:TUI(可选)/ 完整 CLI + compaction + steering + Harbor 基线
-- **M1.5**:核心打磨(dogfooding 一周 + TB2.0 ≥40%)
-- **M2**:Web UI + server(远程操作)
-- **M3**:工作流包 + MCP + Skills + jobs
+- **M0**:TS monorepo + 核心引擎(loop/tools/policy/session)+ `saber exec` headless + 测试
+- **M1**:Server + ui-shared + ui-tui(ink)+ ui-web(React)+ 会话跨前端同步
+- **M1.5**:核心打磨(dogfooding 一周 + Harbor 基线)
+- **M2**:MCP + Skills + 工作流包
+- **M3**:原生壳(Tauri)+ 移动端
 
 ## 8. 从 Rust 版学到的(保留为设计约束)
 
