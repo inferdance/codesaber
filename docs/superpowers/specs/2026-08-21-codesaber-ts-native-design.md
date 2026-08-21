@@ -21,8 +21,8 @@
 | 效果系统 | **Effect-TS** | Layer 依赖注入/Schema 运行时校验/Stream 组合式流处理(opencode 验证过) |
 | HTTP | Fastify 5 | 性能+插件生态+WebSocket 内置 |
 | 校验 | **Zod**(工具参数/配置) | 运行时类型安全,坏参数直接拒绝 |
-| 子进程 | **execa** | 超时/取消/env 清洗/进程组杀,内置 |
-| 文件搜索 | **fast-glob** | 比 find 快 10x,gitignore 支持 |
+| 子进程 | **execa** | 超时/取消/env 清洗/进程组杀,内置(须设 `extendEnv:false` + `killDescendants:true`) |
+| 文件搜索 | **fast-glob** | 比 find 快 10x;⚠️ gitignore 需手动传入 `ignore` 数组(非内置) |
 | Diff | **fast-diff**(编辑匹配) | Unicode 安全,字符级偏移 |
 | 路径 | **pathe** | 跨平台 normalize/resolve 语义正确 |
 | 测试 | **Vitest** | 快、ESM 原生、与 Vite 生态一致 |
@@ -84,10 +84,18 @@ export const ReadParams = z.object({
   limit: z.number().int().positive().optional(),
 });
 
-// 安全的写边界检查(不用 startsWith,用 relative)
+// 安全的写边界检查:路径组件级 + symlink canonicalization
+import { relative, resolve, sep } from "pathe";
+import { realpathSync } from "node:fs";
+
 function isInside(root: string, target: string): boolean {
-  const rel = relative(root, target);
-  return rel === "" || (!rel.startsWith("..") && !resolve(rel).startsWith(".."));
+  // 1. Canonicalize both sides (handles symlinks)
+  const realRoot = realpathSync(root);
+  const realTarget = realpathSync(resolve(target));
+  // 2. Component-level containment (NOT startsWith — prefix bypass;
+  //    NOT startsWith("..") — false-positives on `..cache/`)
+  const rel = relative(realRoot, realTarget);
+  return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !resolve(rel).startsWith(".."));
 }
 ```
 
@@ -153,15 +161,19 @@ export class SessionLog {
 ```typescript
 import { execa } from "execa";
 
-// execa 内置:超时/取消/env 清洗/进程组管理
-// Seatbelt 在 macOS 上额外包装
 const result = await execa("bash", ["-c", command], {
   cwd,
   timeout: timeoutMs,
-  env: allowlistEnv(),  // 只传 PATH/HOME/LANG/TMPDIR
+  env: allowlistEnv(),       // 只传 PATH/HOME/LANG/TMPDIR
+  extendEnv: false,           // ★ 必须 false — 否则 process.env 会合并进来,密钥泄露
   killSignal: "SIGKILL",
+  killDescendants: true,      // ★ 必须 true — 否则超时只杀直接子进程,孙进程残留
 });
 ```
+
+**⚠️ execa 安全要点**(review 发现,容易遗漏):
+- `extendEnv` 默认 `true`——不设 `false` 时 `process.env` 的 API key 会传给 bash
+- `killDescendants` 默认 `false`——不设 `true` 时超时后后台孙进程继续运行
 
 ## 4. 架构分层
 
