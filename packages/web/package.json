@@ -1,0 +1,9 @@
+{
+  "name": "@saber/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'web UI coming in M1 — use server API for now'",
+    "build": "echo 'web UI coming in M1'"
+  }
+}
