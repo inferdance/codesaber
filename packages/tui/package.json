@@ -1,0 +1,12 @@
+{
+  "name": "@saber/tui",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@saber/core": "workspace:*",
+    "@saber/ai": "workspace:*",
+    "ink": "^5.0.0",
+    "react": "^18.0.0"
+  },
+  "devDependencies": { "typescript": "^5.7.0" }
+}

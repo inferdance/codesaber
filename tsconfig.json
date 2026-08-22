@@ -3,8 +3,9 @@
   "references": [
     { "path": "packages/ai" },
     { "path": "packages/core" },
-    { "path": "packages/ui-shared" },
     { "path": "packages/server" },
+    { "path": "packages/tui" },
+    { "path": "packages/web" },
     { "path": "packages/cli" }
   ]
 }
