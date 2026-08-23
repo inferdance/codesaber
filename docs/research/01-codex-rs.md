@@ -95,3 +95,68 @@ ratatui + crossterm,渲染策略独树一帜:**用终端原生 scrollback 存放
 4. **TUI 与核心彻底解耦 + 原生 scrollback 渲染**:一份 core 同服终端/IDE/云端;历史零渲染成本。
 5. **turn 内 steering 与压缩滚动窗口**:用户输入可在模型运行中排队注入,token 超限在 turn 中途无缝 compact 并续跑。
 6. **极端工程治理**:130+ crate 全 workspace 统一 deny `unwrap/expect`、数十条 clippy 强 lint、依赖零冗余。
+
+---
+
+# 增量调研:2026-08-23(c9b19de,上次 9b9b614 后 242 提交)
+
+## 重大变化
+
+### 1. shell_command 已删除,统一执行收编一切
+
+传统一次性 `shell_command` 工具已完全移除。现在只有 `exec_command` + `write_stdin` 统一执行对,受 Feature flag 双开关控制。这意味着 codex 的"工具执行层"已完全统一到一个抽象上。
+
+### 2. exec-server:远端执行架构
+
+新增 `exec-server` / `exec-server-protocol` crate——统一执行可以承载到独立服务进程,通过 JSON-RPC over WebSocket + Noise relay 协议与主进程通信。支持 `--remote` 注册到环境 registry 和 forward 中继。**工具执行层已可整体外置**。
+
+### 3. history/notes:私有模型状态工具(ext/history-notes)
+
+跨上下文窗口的模型私有记忆:
+- `history.*` 工具:上下文窗口重置后检索/读取归一化历史
+- `notes.*` 工具:跨窗口私有笔记(虚拟路径,单文件 ≤1MB)
+- **设计激进**:工具描述明确要求模型"静默使用、绝不向用户透露该工具的存在"
+
+### 4. permission_profile_intersection(793 行)
+
+权限档位求交做成代数运算:合并多个权限配置时,如果无法不弱化地合并就报错拒绝。这比简单的"后写覆盖"更安全。
+
+### 5. Guardian V2 安全评审闭环
+
+同步评审(升级命令走 `sync_reviewer`)+ 异步评分复用(评审线程结果在后续安全评分中复用)。评审线程与 subagent 明确区分。
+
+### 6. content kinds 体系
+
+用户输入和上下文片段按内容类别标注,在合并消息时保留标注——为后续的上下文管理(压缩/过滤/审计)提供元数据基础。
+
+### 7. 新增 crate(差量内)
+
+- `ext/history-notes` — 私有记忆工具
+- `utils/redacted-string` — 凭据脱敏字符串类型(配合"Keep credentials out of app-server logs")
+
+### 8. 沙箱进化
+
+- 策略文件以 `.sbpl` 组织(seatbelt base/network/preferences/restricted_read_only)
+- macOS 偏好读限全盘策略(新)
+- Linux fd 传递挂载(新)
+- Windows ACL/audit 强化
+- **远端执行强制执行网络策略**
+
+### 9. TUI 新功能
+
+- 权限模式循环切换键位
+- `/copy` 响应目标选择器
+- vim `r` 替换字符
+- `misalignment_policy`(流式渲染错位防护)
+- 补丁审批分页(`file_change_approvals`)
+
+### 10. 对 CodeSaber 最有参考价值的点
+
+| codex 新特性 | 对我们的启示 |
+|---|---|
+| 统一执行 + exec-server | 工具执行层可整体外置(未来远程沙箱的基础) |
+| history/notes 私有状态 | 上下文压缩后模型"记得什么"的解决方案 |
+| permission_profile_intersection | 权限合并代数(比后写覆盖更安全) |
+| Guardian V2 双层审查 | 同步+异步安全审查闭环 |
+| content kinds | 上下文管理的元数据基础 |
+| RedactedString | 凭据不进日志的类型级保障 |
