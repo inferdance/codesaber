@@ -1,12 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true,
-    "baseUrl": ".",
-    "paths": {
-      "@saber/ai": ["../ai/src/index.ts"],
-      "@saber/core": ["../core/src/index.ts"]
-    }
+    "composite": true,
+    "outDir": "dist",
+    "rootDir": "src"
   },
-  "include": ["src/**/*.ts", "../core/src/**/*.ts", "../ai/src/**/*.ts"]
+  "references": [{ "path": "../core" }],
+  "include": ["src"]
 }

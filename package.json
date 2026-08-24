@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -b",
     "test": "vitest run",
-    "lint": "tsc -b --noEmit",
+    "lint": "tsc -b",
     "saber": "tsx packages/cli/src/main.ts"
   },
   "devDependencies": {
