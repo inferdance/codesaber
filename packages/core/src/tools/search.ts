@@ -98,12 +98,12 @@ export function walk(opt: WalkOptions): WalkResult {
   let hidden = 0;
 
   const scanFile = (abs: string, rel: string): void => {
+    if (!linePattern) return; // never touch file contents without a pattern (glob path)
     try {
       const stat = fs.statSync(abs);
       if (stat.size > 1_000_000) return;
       const text = fs.readFileSync(abs, "utf-8");
       if (text.includes("\0")) return;
-      if (!linePattern) return;
       text.split("\n").some((line, idx) => {
         if (linePattern.test(line)) {
           matches.push({ abs, line: idx + 1, text: line.slice(0, 400) });

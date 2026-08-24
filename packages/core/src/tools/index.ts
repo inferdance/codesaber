@@ -218,34 +218,44 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
           const rgArgs = ["--json", "--smart-case", "--max-count", "50"];
           if (args.glob) rgArgs.push("--glob", args.glob);
           // Pre-exclude denied patterns so rg never opens those files at all;
-          // the output-side deny() below stays as a second layer.
+          // the output-side deny() below stays as a second layer. The three
+          // forms mirror checkRead semantics exactly (basename equals /
+          // starts-with / ends-with) so rg never excludes a file the policy
+          // would allow (e.g. ".env" must not match "foo.environment.ts").
           for (const suffix of tctx.policy.deniedReadSuffixes) {
-            rgArgs.push("--glob", `!**/*${suffix}*`);
+            rgArgs.push(
+              "--glob", `!**/${suffix}`,
+              "--glob", `!**/${suffix}*`,
+              "--glob", `!**/*${suffix}`,
+            );
           }
           rgArgs.push("--", searchRegex, searchPath);
           const result = await execa("rg", rgArgs, {
             cwd: tctx.cwd, timeout: 30_000, reject: false, maxBuffer: 10 * 1024 * 1024,
           });
-          if (result.exitCode === 2) return { content: `grep failed: ${result.stderr || "rg error"}`, isError: true };
-          const out: string[] = [];
-          let redacted = 0;
-          for (const line of result.stdout.split("\n")) {
-            if (!line || out.length >= 200) continue;
-            let evt: RgEvent;
-            try { evt = JSON.parse(line) as RgEvent; } catch { continue; }
-            if (evt.type !== "match") continue;
-            const file = evt.data?.path?.text;
-            const text = evt.data?.lines?.text?.replace(/\r?\n$/, "");
-            const lineNo = evt.data?.line_number;
-            if (!file || text === undefined || lineNo === undefined) continue;
-            if (deny(file)) { redacted++; continue; }
-            out.push(`${display(file)}:${lineNo}:${text.slice(0, 400)}`);
+          if (result.exitCode !== 2) {
+            const out: string[] = [];
+            let redacted = 0;
+            for (const line of result.stdout.split("\n")) {
+              if (!line || out.length >= 200) continue;
+              let evt: RgEvent;
+              try { evt = JSON.parse(line) as RgEvent; } catch { continue; }
+              if (evt.type !== "match") continue;
+              const file = evt.data?.path?.text;
+              const text = evt.data?.lines?.text?.replace(/\r?\n$/, "");
+              const lineNo = evt.data?.line_number;
+              if (!file || text === undefined || lineNo === undefined) continue;
+              if (deny(file)) { redacted++; continue; }
+              out.push(`${display(file)}:${lineNo}:${text.slice(0, 400)}`);
+            }
+            if (out.length === 0) {
+              return { content: redacted > 0 ? `no matches (${redacted} hidden by read policy)` : "no matches", isError: false };
+            }
+            if (redacted > 0) out.push(`[${redacted} matches hidden by read policy]`);
+            return { content: truncateMiddle(out.join("\n")), isError: false };
           }
-          if (out.length === 0) {
-            return { content: redacted > 0 ? `no matches (${redacted} hidden by read policy)` : "no matches", isError: false };
-          }
-          if (redacted > 0) out.push(`[${redacted} matches hidden by read policy]`);
-          return { content: truncateMiddle(out.join("\n")), isError: false };
+          // exit 2 = rg rejected the regex (e.g. JS-only look-around): fall
+          // through to the walker so both backends give the same answer
         } catch { /* fall through to walker */ }
       }
 

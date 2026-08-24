@@ -106,4 +106,22 @@ describe("session WAL", () => {
     expect(r.events.map((e) => e.payload.type)).toEqual(["session_meta"]);
     expect(r.tornAt).toBe(1);
   });
+
+  it("open repairs a valid trailing record that lacks its newline", () => {
+    const log = SessionLog.create(tmp, "s10", {});
+    log.record({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "one" }] } });
+    log.close();
+    // strip the final newline: complete JSON, no LF — must be kept, not truncated
+    const content = fs.readFileSync(log.path, "utf-8");
+    fs.writeFileSync(log.path, content.replace(/\n$/, ""));
+
+    const reopened = SessionLog.open(tmp, "s10");
+    reopened.record({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "two" }] } });
+    reopened.close();
+
+    const r = recoverSession(reopened.path);
+    expect(r.tornAt).toBeUndefined();
+    expect(r.events.map((e) => e.payload.type)).toEqual(["session_meta", "user_message", "user_message"]);
+    expect(r.events.map((e) => e.seq)).toEqual([0, 1, 2]);
+  });
 });

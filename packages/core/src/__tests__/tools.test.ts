@@ -273,6 +273,23 @@ describe("grep tool", () => {
     expect(none.isError).toBe(false);
     expect(none.content).toMatch(/^no matches/);
   });
+
+  it("does not over-exclude names with a deny suffix in the middle", async () => {
+    // ".env" deny suffix must not hide "foo.environment.ts" (policy checks
+    // equals/startsWith/endsWith only) — rg globs and walker must agree
+    writeFileSync(path.join(workspace, "foo.environment.ts"), "MIDMARK findme\n");
+    const result = await tool("grep").execute({ pattern: "MIDMARK" }, ctx);
+    expect(result.isError).toBe(false);
+    expect(result.content).toMatch(/foo\.environment\.ts:1/);
+  });
+
+  it("falls back to the walker when rg rejects the regex dialect", async () => {
+    writeFileSync(path.join(workspace, "lookahead.txt"), "import saber here\n");
+    // look-ahead is valid JS regex, unsupported by rg — same query must work on both backends
+    const result = await tool("grep").execute({ pattern: "(?=import)import" }, ctx);
+    expect(result.isError).toBe(false);
+    expect(result.content).toMatch(/lookahead\.txt:1/);
+  });
 });
 
 describe("glob tool", () => {

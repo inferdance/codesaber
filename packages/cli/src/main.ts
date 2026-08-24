@@ -9,11 +9,13 @@ const command = args[0];
 
 // When a downstream pipe closes early (e.g. `saber ... | head`), abort the
 // active turn instead of exiting on the spot, so cleanup (session close,
-// turn_complete, child-process teardown) still runs; exit code follows.
-const pipeClosed = { abort: null as null | (() => void) };
+// turn_complete, child-process teardown) still runs. EPIPE-triggered aborts
+// exit 0 (the consumer closed the pipe); real timeouts exit 124.
+const pipeClosed = { abort: null as null | (() => void), epipe: false };
 process.stdout.on("error", (e: NodeJS.ErrnoException) => {
   if (e.code !== "EPIPE") throw e;
   process.exitCode ??= 0;
+  pipeClosed.epipe = true;
   pipeClosed.abort?.();
 });
 
@@ -106,10 +108,11 @@ async function runExec(args: string[]): Promise<void> {
     const { answer, outcome } = await engine.runTurn({ userMessage: prompt, system, signal: controller.signal });
     if (!jsonMode && answer) console.log(answer);
     if (outcome.kind === "done") exitCode = 0;
-    else if (outcome.kind === "aborted") exitCode = 124;
+    else if (outcome.kind === "aborted") exitCode = pipeClosed.epipe ? 0 : 124;
     else exitCode = 1;
   } finally {
     pipeClosed.abort = null;
+    pipeClosed.epipe = false;
     if (timer) clearTimeout(timer);
     session.close();
     const usage = engine.getUsage();

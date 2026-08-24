@@ -43,7 +43,15 @@ export class SessionLog {
     }
     const raw = fs.readFileSync(file);
     if (raw.length > 0 && raw[raw.length - 1] !== 0x0a) {
-      fs.truncateSync(file, raw.lastIndexOf(0x0a) + 1);
+      const lastNl = raw.lastIndexOf(0x0a);
+      const tail = raw.slice(lastNl + 1).toString("utf-8").trim();
+      let tailValid = false;
+      try { tailValid = isEnvelope(JSON.parse(tail)); } catch { tailValid = false; }
+      if (tailValid) {
+        fs.appendFileSync(file, "\n"); // complete record missing its LF: repair, keep it
+      } else {
+        fs.truncateSync(file, lastNl + 1); // torn fragment: drop it
+      }
     }
     const fd = fs.openSync(file, "a");
     const log = new SessionLog(dir, sessionId, fd);

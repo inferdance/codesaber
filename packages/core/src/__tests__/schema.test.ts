@@ -42,8 +42,11 @@ describe("zod → JSON Schema derivation", () => {
         readFiles: new Map(),
       };
       const tools = createTools(ctx);
-      const paramsOf = (name: string): Record<string, unknown> =>
-        tools.find((t) => t.name === name)!.parameters;
+      const paramsOf = (name: string): Record<string, unknown> => {
+        const tool = tools.find((t) => t.name === name);
+        if (!tool) throw new Error(`tool not registered: ${name}`);
+        return tool.parameters;
+      };
 
       const read = paramsOf("read") as {
         properties: Record<string, Record<string, unknown>>;
