@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-import { createOpenAiProvider, createAnthropicProvider } from "@saber/ai";
 import { Engine, SessionLog, createPathPolicy, createTools, type ToolContext } from "@saber/core";
+import { buildProvider, getApiKey, getDataDir, systemPrompt, validatedBaseUrl, type Auth } from "./runtime.js";
 import * as path from "node:path";
-import * as fs from "node:fs";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -19,18 +18,10 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
   pipeClosed.abort?.();
 });
 
-function getDataDir(): string {
-  const dir = process.env.SABER_DATA_DIR ?? path.join(process.env.HOME ?? ".", ".codesaber");
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-function getApiKey(): { key: string; isAnthropic: boolean } | null {
-  const anthropic = process.env.SABER_ANTHROPIC_KEY ?? process.env.ANTHROPIC_API_KEY;
-  if (anthropic) return { key: anthropic, isAnthropic: true };
-  const openai = process.env.SABER_OPENAI_KEY ?? process.env.OPENAI_API_KEY;
-  if (openai) return { key: openai, isAnthropic: false };
-  return null;
+function requireAuth(): Auth {
+  const auth = getApiKey();
+  if (!auth) { console.error("error: set ANTHROPIC_API_KEY or OPENAI_API_KEY"); process.exit(1); }
+  return auth;
 }
 
 async function runExec(args: string[]): Promise<void> {
@@ -51,26 +42,17 @@ async function runExec(args: string[]): Promise<void> {
     console.error("error: --timeout must be a positive integer (seconds)"); process.exit(2);
   }
 
-  const auth = getApiKey();
-  if (!auth) { console.error("error: set ANTHROPIC_API_KEY or OPENAI_API_KEY"); process.exit(1); }
-
-  // Optional endpoint override for OpenAI/Anthropic-compatible providers
-  // (e.g. GLM's anthropic-compatible API, DeepSeek's openai-compatible API).
-  const baseUrl = process.env.SABER_BASE_URL;
-  if (baseUrl && !/^https?:\/\//.test(baseUrl)) {
-    console.error("error: SABER_BASE_URL must be an http(s) URL"); process.exit(2);
-  }
+  const auth = requireAuth();
+  const baseUrl = validatedBaseUrl();
+  const { provider, defaultModel } = buildProvider(auth, baseUrl);
+  const resolvedModel = model ?? defaultModel;
 
   const cwd = process.cwd();
   const dataDir = getDataDir();
   const sessionId = `exec-${Date.now()}`;
 
-  const provider = auth.isAnthropic
-    ? createAnthropicProvider({ baseUrl: baseUrl ?? "https://api.anthropic.com", apiKey: auth.key, defaultModel: model ?? "claude-sonnet-4-5-20250929" })
-    : createOpenAiProvider({ name: "openai", baseUrl: baseUrl ?? "https://api.openai.com/v1", apiKey: auth.key, defaultModel: model ?? "gpt-4o" });
-
   const session = SessionLog.create(path.join(dataDir, "sessions"), sessionId, {
-    protocol_version: "0.2.0", engine_version: "0.1.0", cwd, model,
+    protocol_version: "0.2.0", engine_version: "0.1.0", cwd, model: resolvedModel,
   });
 
   const toolContext: ToolContext = {
@@ -87,25 +69,13 @@ async function runExec(args: string[]): Promise<void> {
 
   const engine = new Engine({
     provider, tools, session, toolContext,
-    model: model ?? (auth.isAnthropic ? "claude-sonnet-4-5-20250929" : "gpt-4o"),
+    model: resolvedModel,
     onEvent: jsonMode ? (e) => console.log(JSON.stringify(e)) : undefined,
   });
 
-  const system = `You are saber, a coding agent. Be direct and surgical.
-
-# Environment
-- cwd: ${cwd}
-- platform: ${process.platform}
-
-# Rules
-- Read a file before editing it; use edit (not sed) for code changes.
-- Prefer grep/glob to locate code over listing directories with bash.
-- After changing code, verify with tests or a build via bash.
-- Cite locations as path:line in your final answer.`;
-
   let exitCode = 1;
   try {
-    const { answer, outcome } = await engine.runTurn({ userMessage: prompt, system, signal: controller.signal });
+    const { answer, outcome } = await engine.runTurn({ userMessage: prompt, system: systemPrompt(cwd), signal: controller.signal });
     if (!jsonMode && answer) console.log(answer);
     if (outcome.kind === "done") exitCode = 0;
     else if (outcome.kind === "aborted") exitCode = pipeClosed.epipe ? 0 : 124;
@@ -122,6 +92,40 @@ async function runExec(args: string[]): Promise<void> {
   process.exit(exitCode);
 }
 
+async function runServer(args: string[]): Promise<void> {
+  let port = 3080;
+  let model: string | undefined;
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--port") port = Number(args[++i]);
+    else if (args[i] === "--model") model = args[++i];
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error("error: --port must be 1-65535"); process.exit(2);
+  }
+
+  const auth = requireAuth();
+  const baseUrl = validatedBaseUrl();
+  const { provider, defaultModel } = buildProvider(auth, baseUrl);
+  const cwd = process.cwd();
+
+  const { createSaberServer } = await import("@saber/server");
+  const server = await createSaberServer({
+    provider,
+    model: model ?? defaultModel,
+    cwd,
+    dataDir: getDataDir(),
+    system: systemPrompt(cwd),
+    port,
+    host: "127.0.0.1",
+  });
+  const address = await server.listen();
+  console.log(`saber server`);
+  console.log(`  http:   ${address}`);
+  console.log(`  ws:     ${address}/ws`);
+  console.log(`  cwd:    ${cwd}`);
+  console.log(`  model:  ${model ?? defaultModel}`);
+}
+
 async function runDoctor(): Promise<void> {
   console.log("saber doctor\n");
   console.log("Configuration:");
@@ -136,15 +140,17 @@ function help(): void {
 
 USAGE:
   saber exec -p <prompt> [--json] [--model <model>] [--timeout <seconds>]
+  saber server [--port <port>] [--model <model>]
   saber doctor
   saber --version
 
-EXIT CODES:
+EXIT CODES (exec):
   0 success · 1 failure · 2 usage error · 124 timed out`);
 }
 
 switch (command) {
   case "exec": runExec(args).catch((e) => { console.error(e); process.exit(1); }); break;
+  case "server": runServer(args).catch((e) => { console.error(e); process.exit(1); }); break;
   case "doctor": runDoctor(); break;
   case "--version": console.log("saber 0.1.0"); break;
   default: help(); break;

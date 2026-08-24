@@ -41,6 +41,9 @@ importers:
       '@saber/core':
         specifier: workspace:*
         version: link:../core
+      '@saber/server':
+        specifier: workspace:^
+        version: link:../server
     devDependencies:
       tsx:
         specifier: ^4.0.0
@@ -68,10 +71,12 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.20.1)
 
+  packages/sandbox: {}
+
   packages/server:
     dependencies:
       '@fastify/websocket':
-        specifier: ^11.0.0
+        specifier: ^11.3.0
         version: 11.3.0
       '@saber/ai':
         specifier: workspace:*
@@ -80,15 +85,24 @@ importers:
         specifier: workspace:*
         version: link:../core
       fastify:
-        specifier: ^5.0.0
+        specifier: ^5.12.1
         version: 5.12.1
+      ws:
+        specifier: ^8
+        version: 8.21.3
     devDependencies:
+      '@types/ws':
+        specifier: ^8
+        version: 8.18.1
       tsx:
         specifier: ^4.0.0
         version: 4.23.12
       typescript:
-        specifier: ^5.7.0
+        specifier: ^5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^2.1
+        version: 2.1.9(@types/node@22.20.1)
 
   packages/tui:
     dependencies:
@@ -771,6 +785,9 @@ packages:
 
   '@types/node@22.20.1':
     resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@vitest/expect@2.1.9':
     resolution: {integrity: sha512-UJCIkTBenHeKT1TTlKMJWy1laZewsRIzYighyYiJKZreqtdxSos/S1t+ktRMQWu2CKqaarrkeszJx1cgC5tGZw==}
@@ -1864,6 +1881,10 @@ snapshots:
   '@types/node@22.20.1':
     dependencies:
       undici-types: 6.21.0
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 22.20.1
 
   '@vitest/expect@2.1.9':
     dependencies:
