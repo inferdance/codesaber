@@ -31,6 +31,8 @@ export interface ChatRequest {
   tools: ToolSchema[];
   max_tokens?: number;
   temperature?: number;
+  /** Abort handle, honored by the fetch and stream loop. */
+  signal?: AbortSignal;
 }
 
 export type FinishReason = "stop" | "tool_calls" | "length";

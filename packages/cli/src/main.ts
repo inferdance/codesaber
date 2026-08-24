@@ -7,6 +7,12 @@ import * as fs from "node:fs";
 const args = process.argv.slice(2);
 const command = args[0];
 
+// Exit gracefully when a downstream pipe closes early (e.g. `saber ... | head`).
+process.stdout.on("error", (e: NodeJS.ErrnoException) => {
+  if (e.code === "EPIPE") process.exit(0);
+  throw e;
+});
+
 function getDataDir(): string {
   const dir = process.env.SABER_DATA_DIR ?? path.join(process.env.HOME ?? ".", ".codesaber");
   fs.mkdirSync(dir, { recursive: true });
@@ -25,14 +31,19 @@ async function runExec(args: string[]): Promise<void> {
   let prompt = "";
   let jsonMode = false;
   let model: string | undefined;
+  let timeoutSec: number | undefined;
 
   for (let i = 1; i < args.length; i++) {
     if (args[i] === "-p" || args[i] === "--prompt") prompt = args[++i] ?? "";
     else if (args[i] === "--json") jsonMode = true;
     else if (args[i] === "--model") model = args[++i];
+    else if (args[i] === "--timeout") timeoutSec = Number(args[++i]);
   }
 
   if (!prompt) { console.error("error: -p <prompt> required"); process.exit(2); }
+  if (timeoutSec !== undefined && (!Number.isInteger(timeoutSec) || timeoutSec < 1)) {
+    console.error("error: --timeout must be a positive integer (seconds)"); process.exit(2);
+  }
 
   const auth = getApiKey();
   if (!auth) { console.error("error: set ANTHROPIC_API_KEY or OPENAI_API_KEY"); process.exit(1); }
@@ -45,17 +56,20 @@ async function runExec(args: string[]): Promise<void> {
     ? createAnthropicProvider({ baseUrl: "https://api.anthropic.com", apiKey: auth.key, defaultModel: model ?? "claude-sonnet-4-5-20250929" })
     : createOpenAiProvider({ name: "openai", baseUrl: "https://api.openai.com/v1", apiKey: auth.key, defaultModel: model ?? "gpt-4o" });
 
-  const session = new SessionLog(path.join(dataDir, "sessions"), sessionId, {
-    protocol_version: "0.1.0", engine_version: "0.1.0", cwd, model,
+  const session = SessionLog.create(path.join(dataDir, "sessions"), sessionId, {
+    protocol_version: "0.2.0", engine_version: "0.1.0", cwd, model,
   });
 
   const toolContext: ToolContext = {
     sessionId, cwd, dataDir,
     policy: createPathPolicy(cwd, dataDir),
-    readFiles: new Set(),
+    readFiles: new Map(),
   };
 
   const tools = createTools(toolContext);
+
+  const controller = new AbortController();
+  const timer = timeoutSec !== undefined ? setTimeout(() => controller.abort(), timeoutSec * 1000) : undefined;
 
   const engine = new Engine({
     provider, tools, session, toolContext,
@@ -75,11 +89,21 @@ async function runExec(args: string[]): Promise<void> {
 - After changing code, verify with tests or a build via bash.
 - Cite locations as path:line in your final answer.`;
 
-  const { answer, outcome } = await engine.runTurn({ userMessage: prompt, system });
-  if (!jsonMode) console.log(answer);
-  const usage = engine.getUsage();
-  console.error(`[tokens: in=${usage.input_tokens} out=${usage.output_tokens} cost=$${usage.cost_usd.toFixed(4)}]`);
-  process.exit(outcome.kind === "done" ? 0 : 1);
+  let exitCode = 1;
+  try {
+    const { answer, outcome } = await engine.runTurn({ userMessage: prompt, system, signal: controller.signal });
+    if (!jsonMode && answer) console.log(answer);
+    if (outcome.kind === "done") exitCode = 0;
+    else if (outcome.kind === "aborted") exitCode = 124;
+    else exitCode = 1;
+  } finally {
+    if (timer) clearTimeout(timer);
+    session.close();
+    const usage = engine.getUsage();
+    const priced = usage.cost_usd > 0 ? `$${usage.cost_usd.toFixed(4)}` : "unknown (unpriced model)";
+    console.error(`[tokens: in=${usage.input_tokens} out=${usage.output_tokens} cost=${priced}]`);
+  }
+  process.exit(exitCode);
 }
 
 async function runDoctor(): Promise<void> {
@@ -95,9 +119,12 @@ function help(): void {
   console.log(`saber — coding agent
 
 USAGE:
-  saber exec -p <prompt> [--json] [--model <model>]
+  saber exec -p <prompt> [--json] [--model <model>] [--timeout <seconds>]
   saber doctor
-  saber --version`);
+  saber --version
+
+EXIT CODES:
+  0 success · 1 failure · 2 usage error · 124 timed out`);
 }
 
 switch (command) {

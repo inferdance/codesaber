@@ -2,28 +2,26 @@ import type { Provider, ChatRequest, ProviderEvent, Usage, Message, Block } from
 import { streamWithRetry } from "@saber/ai";
 import type { ToolDefinition, ToolContext, ToolResult } from "./types.js";
 import type { SessionLog } from "./session.js";
+import type { SaberPayload, SaberEvent } from "./events.js";
 
 export type TurnOutcome =
   | { kind: "done" }
+  | { kind: "busy"; message: string }
+  | { kind: "aborted" }
   | { kind: "doom_loop"; message: string }
   | { kind: "length_refusal" }
   | { kind: "max_steps" }
   | { kind: "provider_failure"; message: string };
 
-export interface TurnInput { userMessage: string; system?: string }
-
-export interface EngineEvent {
-  type: string;
-  turnId?: string;
-  stepId?: string;
-  callId?: string;
-  name?: string;
-  text?: string;
-  isError?: boolean;
-  usage?: Usage;
-  message?: string;
-  [key: string]: unknown;
+export interface TurnInput {
+  userMessage: string;
+  system?: string;
+  /** Abort handle: checked at step boundaries and passed through to the
+   *  provider fetch and the bash tool (process-group kill). */
+  signal?: AbortSignal;
 }
+
+export type { SaberEvent };
 
 const MAX_STEPS = 64;
 
@@ -33,26 +31,51 @@ export interface EngineOptions {
   session: SessionLog;
   toolContext: ToolContext;
   model: string;
-  onEvent?: (event: EngineEvent) => void;
+  onEvent?: (event: SaberEvent) => void;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 export class Engine {
   private history: Message[] = [];
   private usageTotal: Usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0 };
   private steering: string[] = [];
+  private running = false;
 
   constructor(private opts: EngineOptions) {}
 
-  steer(msg: string): void { this.steering.push(msg); }
-  getUsage(): Usage { return { ...this.usageTotal }; }
+  /** Queues a user message for the current/next turn (steering). */
+  steer(msg: string): void {
+    this.steering.push(msg);
+  }
+
+  getUsage(): Usage {
+    return { ...this.usageTotal };
+  }
 
   async runTurn(input: TurnInput): Promise<{ answer: string; outcome: TurnOutcome }> {
-    const turnId = `t-${this.opts.session.nextSeq()}`;
-    this.emit({ type: "turn_started", turnId });
+    if (this.running) {
+      const message = "a turn is already running on this engine; steer or wait";
+      this.dispatch({ type: "error", message });
+      return { answer: "", outcome: { kind: "busy", message } };
+    }
+    this.running = true;
+    try {
+      return await this.loop(input);
+    } finally {
+      this.running = false;
+    }
+  }
 
-    this.opts.session.append("user_message", {
-      message: { role: "user", blocks: [{ type: "text", text: input.userMessage }] },
-    });
+  private async loop(input: TurnInput): Promise<{ answer: string; outcome: TurnOutcome }> {
+    const signal = input.signal;
+    this.opts.toolContext.signal = signal;
+    const turnId = `t-${this.opts.session.nextSeq()}`;
+    this.dispatch({ type: "turn_started", turnId });
+
+    this.dispatch({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: input.userMessage }] } });
     this.history.push({ role: "user", blocks: [{ type: "text", text: input.userMessage }] });
 
     let lastText = "";
@@ -60,12 +83,16 @@ export class Engine {
     let doomTracker: { name: string; argsJson: string; count: number } | null = null;
 
     for (let step = 0; step < MAX_STEPS; step++) {
+      if (signal?.aborted) { outcome = { kind: "aborted" }; break; }
+
       const stepId = `${turnId}-s${step}`;
-      this.emit({ type: "step_started", turnId, stepId });
+      this.dispatch({ type: "step_started", turnId, stepId });
 
       while (this.steering.length > 0) {
         const msg = this.steering.shift()!;
-        this.history.push({ role: "user", blocks: [{ type: "text", text: msg }] });
+        const blocks: Block[] = [{ type: "text", text: msg }];
+        this.dispatch({ type: "user_message", message: { role: "user", blocks } });
+        this.history.push({ role: "user", blocks });
       }
 
       const request: ChatRequest = {
@@ -75,6 +102,7 @@ export class Engine {
         tools: this.opts.tools.map((t) => ({
           name: t.name, description: t.description, parameters: t.parameters,
         })),
+        signal,
       };
 
       let text = "";
@@ -91,7 +119,7 @@ export class Engine {
           switch (event.type) {
             case "text_delta":
               text += event.text_delta;
-              this.emit({ type: "assistant_delta", turnId, stepId, text: event.text_delta });
+              this.dispatch({ type: "assistant_delta", turnId, stepId, text: event.text_delta });
               break;
             case "thinking_delta": thinking += event.text_delta; break;
             case "tool_call_start":
@@ -109,11 +137,13 @@ export class Engine {
           if (providerError) break;
         }
       } catch (e) {
-        providerError = `unhandled: ${e}`;
+        providerError = `unhandled: ${e instanceof Error ? e.message : String(e)}`;
       }
 
+      if (signal?.aborted) { outcome = { kind: "aborted" }; break; }
+
       if (providerError) {
-        this.emit({ type: "error", message: providerError });
+        this.dispatch({ type: "error", message: providerError });
         outcome = { kind: "provider_failure", message: providerError };
         break;
       }
@@ -124,7 +154,7 @@ export class Engine {
           try {
             toolCalls.push({ id, name: call.name, arguments: JSON.parse(call.args) });
           } catch {
-            this.emit({ type: "error", message: `malformed args for ${call.name}; rejected` });
+            this.dispatch({ type: "error", message: `malformed args for ${call.name}; rejected` });
           }
         }
       }
@@ -132,21 +162,21 @@ export class Engine {
       this.usageTotal.input_tokens += stepUsage.input_tokens;
       this.usageTotal.output_tokens += stepUsage.output_tokens;
       this.usageTotal.cost_usd += stepUsage.cost_usd;
-      this.emit({ type: "step_finished", turnId, stepId, usage: stepUsage });
+      this.dispatch({ type: "step_finished", turnId, stepId, usage: stepUsage });
 
       const blocks: Block[] = [];
       if (thinking) blocks.push({ type: "thinking", text: thinking });
       if (text) blocks.push({ type: "text", text });
       for (const tc of toolCalls) blocks.push({ type: "tool_call", ...tc });
       if (blocks.length > 0) {
-        this.opts.session.append("assistant_message", { message: { role: "assistant", blocks }, usage: stepUsage });
+        this.dispatch({ type: "assistant_message", message: { role: "assistant", blocks }, usage: stepUsage });
         this.history.push({ role: "assistant", blocks });
       }
 
       if (toolCalls.length === 0) { lastText = text; outcome = { kind: "done" }; break; }
 
       if (finishReason === "length") {
-        this.emit({ type: "error", message: "truncated; refusing tool calls" });
+        this.dispatch({ type: "error", message: "truncated; refusing tool calls" });
         outcome = { kind: "length_refusal" };
         break;
       }
@@ -160,73 +190,73 @@ export class Engine {
       doomTracker = { name: firstCall.name, argsJson: currentArgsJson, count: doomed };
       if (doomed >= 3) {
         const message = `doom-loop: ${firstCall.name} ×3`;
-        this.emit({ type: "error", message });
+        this.dispatch({ type: "error", message });
         outcome = { kind: "doom_loop", message };
         break;
       }
 
       const results = await this.executeTools(turnId, stepId, toolCalls);
-      const resultBlocks: Block[] = results.map(([callId, result]) => ({
+      const resultBlocks: Block[] = results.map(([callId, name, result]) => ({
         type: "tool_result" as const, call_id: callId, content: result.content, is_error: result.isError,
       }));
       if (resultBlocks.length > 0) {
-        this.opts.session.append("user_message", { message: { role: "user", blocks: resultBlocks } });
         this.history.push({ role: "user", blocks: resultBlocks });
       }
 
       if (step + 1 === MAX_STEPS) outcome = { kind: "max_steps" };
     }
 
-    this.emit({ type: "turn_complete", turnId, reason: outcome.kind });
+    this.dispatch({ type: "turn_complete", turnId, reason: outcome.kind });
     return { answer: lastText, outcome };
   }
 
+  /** WAL discipline: durable tool_call intent (fsync) before any side effect. */
   private async executeTools(
     turnId: string, stepId: string,
     calls: Array<{ id: string; name: string; arguments: unknown }>,
-  ): Promise<Array<[string, ToolResult]>> {
+  ): Promise<Array<[string, string, ToolResult]>> {
     const executable: typeof calls = [];
-    const results: Array<[string, ToolResult]> = [];
+    const results: Array<[string, string, ToolResult]> = [];
     for (const call of calls) {
-      try {
-        this.opts.session.append("tool_call", { call_id: call.id, name: call.name, arguments: call.arguments }, true);
-        this.emit({ type: "tool_started", turnId, stepId, callId: call.id, name: call.name });
-        executable.push(call);
-      } catch (e) {
-        results.push([call.id, { content: `WAL failed: ${e}`, isError: true }]);
-      }
+      this.dispatch({ type: "tool_call", callId: call.id, name: call.name, args: call.arguments }, { sync: true });
+      this.dispatch({ type: "tool_started", turnId, stepId, callId: call.id, name: call.name });
+      executable.push(call);
     }
-    const batch = executable.map((c) => ({ name: c.name, args: c.arguments as Record<string, unknown> }));
-    const batchResults = await this.executeBatch(batch);
+    const batchResults = await this.executeBatch(executable);
     for (let i = 0; i < executable.length; i++) {
       const result = batchResults[i];
-      this.opts.session.append("tool_result", { call_id: executable[i].id, content: result.content, is_error: result.isError });
-      this.emit({ type: "tool_completed", callId: executable[i].id, isError: result.isError });
-      results.push([executable[i].id, result]);
+      this.dispatch({ type: "tool_result", callId: executable[i].id, name: executable[i].name, content: result.content, isError: result.isError });
+      this.dispatch({ type: "tool_completed", callId: executable[i].id, isError: result.isError });
+      results.push([executable[i].id, executable[i].name, result]);
     }
     return results;
   }
 
-  private async executeBatch(calls: Array<{ name: string; args: Record<string, unknown> }>): Promise<ToolResult[]> {
-    const slots: Array<{ index: number; tool: ToolDefinition | null; args: Record<string, unknown> }> = calls.map((call, index) => ({
-      index, tool: this.opts.tools.find((t) => t.name === call.name) ?? null, args: call.args,
-    }));
+  private async executeBatch(calls: Array<{ name: string; arguments: unknown }>): Promise<ToolResult[]> {
     const results: ToolResult[] = new Array(calls.length);
-    const readOnly = slots.filter((s) => s.tool !== null && s.tool.concurrency === "read_only");
-    const exclusive = slots.filter((s) => s.tool !== null && s.tool.concurrency !== "read_only");
-    const missing = slots.filter((s) => s.tool === null);
-    for (const slot of missing) {
-      results[slot.index] = { content: `unknown tool: ${calls[slot.index].name}`, isError: true };
-    }
-    const readResults = await Promise.all(
-      readOnly.map((slot) => slot.tool!.execute(slot.args, this.opts.toolContext)),
-    );
-    readOnly.forEach((slot, i) => { results[slot.index] = readResults[i]; });
-    for (const slot of exclusive) {
-      results[slot.index] = await slot.tool!.execute(slot.args, this.opts.toolContext);
-    }
+    const inFlight: Array<Promise<void>> = [];
+    const exclusive: Array<() => Promise<void>> = [];
+    calls.forEach((call, index) => {
+      const tool = this.opts.tools.find((t) => t.name === call.name) ?? null;
+      if (!tool) {
+        results[index] = { content: `unknown tool: ${call.name}`, isError: true };
+        return;
+      }
+      const run = async (): Promise<void> => {
+        results[index] = await tool.execute(isRecord(call.arguments) ? call.arguments : {}, this.opts.toolContext);
+      };
+      if (tool.concurrency === "read_only") inFlight.push(run());
+      else exclusive.push(run);
+    });
+    await Promise.all(inFlight);
+    for (const run of exclusive) await run();
     return results;
   }
 
-  private emit(event: EngineEvent): void { this.opts.onEvent?.(event); }
+  /** Single pipeline: seq assignment + persistence + observer fan-out. */
+  private dispatch(payload: SaberPayload, opts?: { sync?: boolean }): SaberEvent {
+    const event = this.opts.session.record(payload, opts);
+    this.opts.onEvent?.(event);
+    return event;
+  }
 }

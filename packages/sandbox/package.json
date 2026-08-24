@@ -1,0 +1,7 @@
+{
+  "name": "@saber/sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "macOS Seatbelt confinement for bash tool execution. Deferred to M2 (plan amendment 7): personal-use full-permission mode ships first."
+}

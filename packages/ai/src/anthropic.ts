@@ -1,5 +1,6 @@
 import type { Message, Provider, ChatRequest, ProviderEvent, Usage } from "./types.js";
 import { SseParser } from "./sse.js";
+import { estimateCostUsd } from "./pricing.js";
 
 export interface AnthropicConfig {
   baseUrl: string;
@@ -44,6 +45,7 @@ export function createAnthropicProvider(config: AnthropicConfig): Provider {
       try {
         response = await fetch(`${config.baseUrl}/v1/messages`, {
           method: "POST",
+          signal: request.signal,
           headers: {
             "Content-Type": "application/json",
             "x-api-key": config.apiKey,
@@ -63,13 +65,20 @@ export function createAnthropicProvider(config: AnthropicConfig): Provider {
           }),
         });
       } catch (e) {
-        yield { type: "error", message: `request failed: ${e}`, retryable: "network" };
+        if (e instanceof Error && e.name === "AbortError") {
+          yield { type: "error", message: "aborted", retryable: "fatal" };
+        } else {
+          yield { type: "error", message: `request failed: ${e}`, retryable: "network" };
+        }
         return;
       }
 
       if (!response.ok || !response.body) {
         const text = await response.text().catch(() => "");
-        yield { type: "error", message: `HTTP ${response.status}: ${text}`, retryable: "fatal" };
+        const retryable = response.status === 429 ? "rate_limit" as const
+          : response.status === 529 || response.status >= 500 ? "server_error" as const
+          : "fatal" as const;
+        yield { type: "error", message: `HTTP ${response.status}: ${text}`, retryable };
         return;
       }
 
@@ -92,6 +101,7 @@ export function createAnthropicProvider(config: AnthropicConfig): Provider {
                 if (v.message?.usage) {
                   usage.input_tokens = v.message.usage.input_tokens ?? 0;
                   usage.cache_read_tokens = v.message.usage.cache_read_input_tokens ?? 0;
+                  usage.cache_write_tokens = v.message.usage.cache_creation_input_tokens ?? 0;
                 }
                 break;
               case "content_block_start":
@@ -117,9 +127,11 @@ export function createAnthropicProvider(config: AnthropicConfig): Provider {
                 if (v.delta?.stop_reason) finishReason = v.delta.stop_reason;
                 if (v.usage?.output_tokens) usage.output_tokens = v.usage.output_tokens;
                 break;
-              case "message_stop":
+              case "message_stop": {
+                usage.cost_usd = estimateCostUsd(request.model || config.defaultModel, usage);
                 yield { type: "finish", reason: finishReason as "stop" | "tool_calls" | "length", usage };
                 return;
+              }
               case "error":
                 yield { type: "error", message: v.error?.message ?? "provider error", retryable: "server_error" };
                 return;

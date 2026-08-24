@@ -5,7 +5,11 @@ export interface ToolContext {
   cwd: string;
   dataDir: string;
   policy: import("./policy.js").PathPolicy;
-  readFiles: Set<string>;
+  /** Files read (or written) this session → mtime at that moment.
+   *  edit refuses when the file changed since (freshness guard). */
+  readFiles: Map<string, number>;
+  /** Current turn's abort signal; tools that spawn processes must honor it. */
+  signal?: AbortSignal;
 }
 
 export interface ToolDefinition {

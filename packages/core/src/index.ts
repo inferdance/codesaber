@@ -1,22 +1,24 @@
 export { createPathPolicy, checkRead, checkWrite, isInside, SECRET_HOME_DIRS, SECRET_SUFFIXES, type PathPolicy } from "./policy.js";
-export { SessionLog, recoverSession, type SessionEventEnvelope, type Recovered } from "./session.js";
-export { Engine, type TurnOutcome, type TurnInput, type EngineEvent, type EngineOptions } from "./engine.js";
+export { SessionLog, recoverSession, type Recovered } from "./session.js";
+export { Engine, type TurnOutcome, type TurnInput, type EngineOptions } from "./engine.js";
 export type { ToolResult, ToolContext, ToolDefinition } from "./types.js";
-export { createTools, applyEdit, truncateMiddle, globToRegExp, type EditOutcome } from "./tools.js";
+export { EPHEMERAL_EVENT_TYPES, type SaberPayload, type SaberEvent, type SessionEventEnvelope } from "./events.js";
+export { createTools, truncateMiddle } from "./tools/index.js";
+export { applyEdit, type EditOutcome } from "./tools/edit.js";
+export { globToRegExp } from "./tools/search.js";
+export { zodToParameters, defineTool } from "./tools/schema.js";
+
+import type { SaberPayload } from "./events.js";
+
 /**
- * Shared data model for Web UI and TUI.
- * Both frontends import from this package — they see the same events,
- * send the same commands, and project the same state.
+ * Shared data model for the web UI and TUI. Both frontends import from this
+ * package — they see the same events (the SaberPayload vocabulary in
+ * events.ts), send the same commands, and project the same state.
  */
 
-// ─── Events (server → client, append-only) ──────────────────────────
+// ─── Wire event: SaberPayload + transport envelope ──────────────────
 
-export interface SaberEvent {
-  seq: number;
-  sessionId: string;
-  type: string;
-  [key: string]: unknown;
-}
+export type WireEvent = { seq: number; sessionId: string } & SaberPayload;
 
 // ─── Commands (client → server, with commandId for idempotency) ────
 
@@ -33,6 +35,8 @@ export interface MessageView {
   content: string;
   toolName?: string;
   isError?: boolean;
+  /** True while the message is a live preview built from assistant_delta. */
+  streaming?: boolean;
   timestamp: number;
 }
 
@@ -48,7 +52,7 @@ export interface SessionProjection {
   };
 }
 
-export function projectSession(sessionId: string, events: SaberEvent[]): SessionProjection {
+export function projectSession(sessionId: string, events: Array<{ seq: number } & SaberPayload>): SessionProjection {
   const projection: SessionProjection = {
     sessionId,
     messages: [],
@@ -59,49 +63,61 @@ export function projectSession(sessionId: string, events: SaberEvent[]): Session
   for (const event of events) {
     switch (event.type) {
       case "user_message": {
-        const msg = (event as any).payload?.message;
-        if (msg?.blocks) {
-          const text = msg.blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
-          if (text) projection.messages.push({ role: "user", content: text, timestamp: event.seq });
-        }
+        const text = event.message.blocks
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
+          .join("");
+        if (text) projection.messages.push({ role: "user", content: text, timestamp: event.seq });
         break;
       }
       case "assistant_message": {
-        const msg = (event as any).payload?.message;
-        if (msg?.blocks) {
-          const text = msg.blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
-          if (text) projection.messages.push({ role: "assistant", content: text, timestamp: event.seq });
+        const text = event.message.blocks
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
+          .join("");
+        if (text) {
+          // a durable assistant message replaces the streaming preview
+          // built from assistant_delta events of the same step
+          const last = projection.messages[projection.messages.length - 1];
+          if (last && last.role === "assistant" && last.streaming) {
+            projection.messages.pop();
+          }
+          projection.messages.push({ role: "assistant", content: text, timestamp: event.seq });
+        }
+        break;
+      }
+      case "assistant_delta": {
+        const last = projection.messages[projection.messages.length - 1];
+        if (last && last.role === "assistant" && last.streaming) {
+          last.content += event.text;
+        } else {
+          projection.messages.push({ role: "assistant", content: event.text, timestamp: event.seq, streaming: true });
         }
         break;
       }
       case "tool_result": {
-        const payload = (event as any).payload;
         projection.messages.push({
           role: "tool",
-          content: payload?.content ?? "",
-          toolName: payload?.name,
-          isError: payload?.is_error ?? false,
+          content: event.content,
+          toolName: event.name,
+          isError: event.isError,
           timestamp: event.seq,
         });
         break;
       }
       case "turn_started":
         projection.isRunning = true;
-        projection.currentTurn = (event as any).turnId;
+        projection.currentTurn = event.turnId;
         break;
       case "turn_complete":
         projection.isRunning = false;
         projection.currentTurn = undefined;
         break;
-      case "step_finished": {
-        const usage = (event as any).usage;
-        if (usage) {
-          projection.usage.inputTokens += usage.input_tokens ?? 0;
-          projection.usage.outputTokens += usage.output_tokens ?? 0;
-          projection.usage.costUsd += usage.cost_usd ?? 0;
-        }
+      case "step_finished":
+        projection.usage.inputTokens += event.usage.input_tokens ?? 0;
+        projection.usage.outputTokens += event.usage.output_tokens ?? 0;
+        projection.usage.costUsd += event.usage.cost_usd ?? 0;
         break;
-      }
     }
   }
   return projection;
@@ -112,7 +128,7 @@ export function projectSession(sessionId: string, events: SaberEvent[]): Session
 export interface SaberClientOptions {
   url: string;
   sessionId: string;
-  onEvent: (event: SaberEvent) => void;
+  onEvent: (event: WireEvent) => void;
   onDisconnect?: () => void;
   onConnect?: () => void;
 }
@@ -136,7 +152,7 @@ export class SaberClient {
     };
     this.ws.onmessage = (msg) => {
       try {
-        const event: SaberEvent = JSON.parse(msg.data);
+        const event = JSON.parse(msg.data as string) as WireEvent;
         if (event.seq > this.lastSeq) this.lastSeq = event.seq;
         this.opts.onEvent(event);
       } catch { /* ignore malformed */ }

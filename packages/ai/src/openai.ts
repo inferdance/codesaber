@@ -1,5 +1,6 @@
 import type { Message, Provider, ChatRequest, ProviderEvent, Usage } from "./types.js";
 import { SseParser } from "./sse.js";
+import { estimateCostUsd } from "./pricing.js";
 
 export interface OpenAiConfig {
   name: string;
@@ -51,6 +52,7 @@ export function createOpenAiProvider(config: OpenAiConfig): Provider {
       try {
         response = await fetch(`${config.baseUrl}/chat/completions`, {
           method: "POST",
+          signal: request.signal,
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${config.apiKey}`,
@@ -69,7 +71,11 @@ export function createOpenAiProvider(config: OpenAiConfig): Provider {
           }),
         });
       } catch (e) {
-        yield { type: "error", message: `request failed: ${e}`, retryable: "network" };
+        if (e instanceof Error && e.name === "AbortError") {
+          yield { type: "error", message: "aborted", retryable: "fatal" };
+        } else {
+          yield { type: "error", message: `request failed: ${e}`, retryable: "network" };
+        }
         return;
       }
 
@@ -95,6 +101,7 @@ export function createOpenAiProvider(config: OpenAiConfig): Provider {
           if (done) break;
           for (const payload of parser.feed(decoder.decode(value, { stream: true }))) {
             if (payload === "[DONE]") {
+              usage.cost_usd = estimateCostUsd(model, usage);
               yield { type: "finish", reason: finishReason as "stop" | "tool_calls" | "length", usage };
               return;
             }

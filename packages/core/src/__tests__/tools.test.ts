@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { createTools, applyEdit, type EditOutcome } from "../tools.js";
+import { applyEdit, type EditOutcome } from "../tools/edit.js";
+import { createTools } from "../tools/index.js";
 import { createPathPolicy } from "../policy.js";
 import type { ToolContext } from "../types.js";
 
@@ -26,7 +27,7 @@ beforeEach(() => {
     cwd: workspace,
     dataDir: path.join(workspace, ".data"),
     policy: createPathPolicy(workspace, path.join(workspace, ".data")),
-    readFiles: new Set(),
+    readFiles: new Map(),
   };
 });
 
@@ -136,6 +137,15 @@ describe("edit tool", () => {
     const result = await tool("edit").execute({ path: "a.txt", old_str: 42, new_str: "x" }, ctx);
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/invalid arguments/);
+  });
+
+  it("refuses when the file changed since it was last read (mtime freshness)", async () => {
+    writeFileSync(path.join(workspace, "stale.txt"), "v1\n");
+    await tool("read").execute({ path: "stale.txt" }, ctx);
+    writeFileSync(path.join(workspace, "stale.txt"), "v2 externally changed\n");
+    const result = await tool("edit").execute({ path: "stale.txt", old_str: "v1", new_str: "v1b" }, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/changed since/);
   });
 });
 
