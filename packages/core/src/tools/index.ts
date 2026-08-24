@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { checkRead, checkWrite } from "../policy.js";
 import type { ToolContext, ToolDefinition, ToolResult } from "../types.js";
 import { applyEdit } from "./edit.js";
-import { escapeRx, globToRegExp, hasRipgrep, walk, type RgEvent } from "./search.js";
+import { escapeRegExp, globToRegExp, hasRipgrep, walk, type RgEvent } from "./search.js";
 import { defineTool } from "./schema.js";
 
 export { applyEdit, type EditOutcome } from "./edit.js";
@@ -202,11 +202,27 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
       const denied = checkRead(tctx.policy, searchPath);
       if (denied) return { content: denied, isError: true };
 
+      // Compile-probe once: invalid regex degrades to an escaped literal for
+      // BOTH backends, so rg and the walker always behave identically.
+      const flags = /[A-Z]/.test(args.pattern) ? "" : "i";
+      let searchRegex: string;
+      try {
+        new RegExp(args.pattern, flags);
+        searchRegex = args.pattern;
+      } catch {
+        searchRegex = escapeRegExp(args.pattern);
+      }
+
       if (await hasRipgrep()) {
         try {
           const rgArgs = ["--json", "--smart-case", "--max-count", "50"];
           if (args.glob) rgArgs.push("--glob", args.glob);
-          rgArgs.push("--", args.pattern, searchPath);
+          // Pre-exclude denied patterns so rg never opens those files at all;
+          // the output-side deny() below stays as a second layer.
+          for (const suffix of tctx.policy.deniedReadSuffixes) {
+            rgArgs.push("--glob", `!**/*${suffix}*`);
+          }
+          rgArgs.push("--", searchRegex, searchPath);
           const result = await execa("rg", rgArgs, {
             cwd: tctx.cwd, timeout: 30_000, reject: false, maxBuffer: 10 * 1024 * 1024,
           });
@@ -233,10 +249,7 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
         } catch { /* fall through to walker */ }
       }
 
-      const flags = /[A-Z]/.test(args.pattern) ? "" : "i";
-      let linePattern: RegExp;
-      try { linePattern = new RegExp(args.pattern, flags); }
-      catch { linePattern = new RegExp(escapeRx(args.pattern), flags); }
+      const linePattern = new RegExp(searchRegex, flags);
       const filePattern = args.glob ? globToRegExp(args.glob.includes("/") ? args.glob : `**/${args.glob}`) : undefined;
       const { matches, hidden } = walk({ root: searchPath, linePattern, filePattern, maxMatches: 200, deny });
       if (matches.length === 0) {

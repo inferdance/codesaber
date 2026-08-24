@@ -253,6 +253,26 @@ describe("grep tool", () => {
     expect(result.content).not.toContain("leak-me-99");
     expect(result.content).not.toContain("id_rsa");
   });
+
+  it("accepts a single file as the search path", async () => {
+    const result = await tool("grep").execute({ pattern: "target", path: "notes.md" }, ctx);
+    expect(result.isError).toBe(false);
+    expect(result.content).toMatch(/notes\.md:1/);
+    expect(result.content).not.toMatch(/app\.ts/);
+  });
+
+  it("degrades an invalid regex to a literal search on both backends", async () => {
+    writeFileSync(path.join(workspace, "star.txt"), "literal a[0] here\n");
+    // "a[0" is an unterminated character class — invalid as a regex
+    const bracket = await tool("grep").execute({ pattern: "a[0" }, ctx);
+    expect(bracket.isError).toBe(false);
+    expect(bracket.content).toMatch(/star\.txt:1.*literal a\[0\] here/);
+
+    // invalid regex whose literal form occurs nowhere → clean no-matches, not a crash
+    const none = await tool("grep").execute({ pattern: "zz(unmatched" }, ctx);
+    expect(none.isError).toBe(false);
+    expect(none.content).toMatch(/^no matches/);
+  });
 });
 
 describe("glob tool", () => {
@@ -291,5 +311,12 @@ describe("glob tool", () => {
     expect(result.isError).toBe(false);
     expect(result.content).toContain("plain.txt");
     expect(result.content).not.toContain(".env");
+  });
+
+  it("accepts a single file as the search root", async () => {
+    writeFileSync(path.join(workspace, "notes.md"), "note\n");
+    const result = await tool("glob").execute({ pattern: "**/*.md", path: "notes.md" }, ctx);
+    expect(result.isError).toBe(false);
+    expect(result.content).toMatch(/notes\.md/);
   });
 });

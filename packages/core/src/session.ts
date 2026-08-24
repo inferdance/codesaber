@@ -31,13 +31,23 @@ export class SessionLog {
     return log;
   }
 
-  /** Reopens an existing log for appending; throws if it does not exist. */
+  /** Reopens an existing log for appending; throws if it does not exist.
+   *  Recovers first: refuses mid-file corruption, and truncates a torn tail
+   *  fragment so appended records never glue onto an unparseable line. */
   static open(dir: string, sessionId: string): SessionLog {
     const file = path.join(dir, `${sessionId}.jsonl`);
     if (!fs.existsSync(file)) throw new Error(`session not found: ${file}`);
+    const recovered = recoverSession(file);
+    if (recovered.tornAt !== undefined) {
+      throw new Error(`session ${sessionId} has corruption at record ${recovered.tornAt}; refusing to append — repair or archive the log first`);
+    }
+    const raw = fs.readFileSync(file);
+    if (raw.length > 0 && raw[raw.length - 1] !== 0x0a) {
+      fs.truncateSync(file, raw.lastIndexOf(0x0a) + 1);
+    }
     const fd = fs.openSync(file, "a");
     const log = new SessionLog(dir, sessionId, fd);
-    log.seq = recoverSession(file).events.reduce((max, e) => Math.max(max, e.seq + 1), 0);
+    log.seq = recovered.events.reduce((max, e) => Math.max(max, e.seq + 1), 0);
     return log;
   }
 
@@ -75,10 +85,21 @@ export interface Recovered {
   tornAt?: number;
 }
 
+function isEnvelope(v: unknown): v is SessionEventEnvelope {
+  if (typeof v !== "object" || v === null) return false;
+  const e = v as Record<string, unknown>;
+  return typeof e.ts === "number"
+    && typeof e.seq === "number"
+    && typeof e.sessionId === "string"
+    && typeof e.payload === "object" && e.payload !== null
+    && typeof (e.payload as Record<string, unknown>).type === "string";
+}
+
 /**
  * Replays a log. Tolerates a torn tail (crash mid-write). A corrupt record
  * mid-file degrades: replay stops there and `tornAt` reports the position —
- * one bad line must not void the whole transcript.
+ * one bad line must not void the whole transcript. Structurally invalid
+ * records (valid JSON, wrong shape) degrade the same way instead of throwing.
  */
 export function recoverSession(filePath: string): Recovered {
   const content = fs.readFileSync(filePath, "utf-8");
@@ -88,10 +109,13 @@ export function recoverSession(filePath: string): Recovered {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    try {
-      events.push(JSON.parse(line) as SessionEventEnvelope);
-    } catch {
-      if (i === lines.length - 1) break; // torn tail: expected after a crash
+    let parsed: unknown;
+    try { parsed = JSON.parse(line); } catch { parsed = undefined; }
+    if (isEnvelope(parsed)) {
+      events.push(parsed);
+    } else if (i === lines.length - 1) {
+      break; // torn tail: expected after a crash
+    } else {
       tornAt = i; // mid-file corruption: keep what we have
       break;
     }

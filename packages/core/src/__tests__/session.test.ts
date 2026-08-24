@@ -68,4 +68,42 @@ describe("session WAL", () => {
     expect(r.events).toHaveLength(1); // only session_meta
     log.close();
   });
+
+  it("open truncates a torn tail so appended records stay recoverable", () => {
+    const log = SessionLog.create(tmp, "s7", {});
+    log.record({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "one" }] } });
+    log.close();
+    fs.appendFileSync(log.path, '{"torn'); // crash mid-write
+
+    const reopened = SessionLog.open(tmp, "s7");
+    reopened.record({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "two" }] } });
+    reopened.close();
+
+    const r = recoverSession(reopened.path);
+    expect(r.tornAt).toBeUndefined();
+    expect(r.events.map((e) => e.payload.type)).toEqual(["session_meta", "user_message", "user_message"]);
+  });
+
+  it("open refuses to append onto mid-file corruption", () => {
+    const log = SessionLog.create(tmp, "s8", {});
+    log.record({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "a" }] } });
+    log.record({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "b" }] } });
+    log.close();
+    const lines = fs.readFileSync(log.path, "utf-8").split("\n");
+    lines[1] = "{corrupt middle";
+    fs.writeFileSync(log.path, lines.join("\n"));
+    expect(() => SessionLog.open(tmp, "s8")).toThrow(/refusing to append/);
+  });
+
+  it("structurally invalid records degrade with tornAt instead of throwing", () => {
+    const log = SessionLog.create(tmp, "s9", {});
+    log.record({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "a" }] } });
+    log.close();
+    const lines = fs.readFileSync(log.path, "utf-8").split("\n");
+    lines[1] = "{}"; // valid JSON, wrong shape
+    fs.writeFileSync(log.path, lines.join("\n"));
+    const r = recoverSession(log.path);
+    expect(r.events.map((e) => e.payload.type)).toEqual(["session_meta"]);
+    expect(r.tornAt).toBe(1);
+  });
 });

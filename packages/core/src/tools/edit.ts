@@ -28,7 +28,7 @@ function replaceFirst(haystack: string, needle: string, replacement: string): st
  * relative structure.
  */
 function reindentWindow(oldLines: string[], newLines: string[], winLines: string[]): string {
-  const lead = (s: string) => s.match(/^[ \t]*/)![0];
+  const lead = (s: string) => s.match(/^[ \t]*/)?.[0] ?? "";
   const commonOf = (ls: string[]): number => {
     let common: number | null = null;
     for (const l of ls) {
@@ -80,7 +80,7 @@ function findLineWindows(content: string, oldStr: string, mode: WindowMode): Lin
     }
     if (!ok) continue;
     const first = lines.slice(i, i + oldLines.length).find((l) => l.trim());
-    windows.push({ start: i, lines: lines.slice(i, i + oldLines.length), indent: first ? first.match(/^[ \t]*/)![0] : "" });
+    windows.push({ start: i, lines: lines.slice(i, i + oldLines.length), indent: first ? first.match(/^[ \t]*/)?.[0] ?? "" : "" });
   }
   return windows;
 }

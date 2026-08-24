@@ -40,7 +40,9 @@ one core, three frontends (web / TUI / headless CLI).
    A failed intent write blocks execution.
 2. **Path policy**: All file access through unified policy (read deny
    secrets, write allowlist workspace+data-dir). Search tools enforce it
-   per-file, before reading. Use `path.relative`.
+   per-file before reading — the walker denies before opening files; the
+   ripgrep backend pre-excludes denied patterns via `--glob` negations and
+   filters output as a second layer. Use `path.relative`.
 3. **Errors in streams**: Provider errors become terminal stream events.
 4. **Session = JSONL**: Append-only event log; the payload vocabulary is the
    discriminated union in `core/src/events.ts` (engine, log, and wire share

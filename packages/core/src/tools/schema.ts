@@ -23,8 +23,12 @@ function convert(s: z.ZodTypeAny): unknown {
       const properties: Record<string, unknown> = {};
       const required: string[] = [];
       for (const [key, value] of Object.entries(shape)) {
-        const unwrapped = unwrap(value as z.ZodTypeAny);
-        properties[key] = convert(unwrapped.schema);
+        const raw = value as z.ZodTypeAny;
+        const unwrapped = unwrap(raw);
+        const converted = convert(unwrapped.schema) as Record<string, unknown>;
+        // .describe() on an optional wrapper must survive the unwrap
+        if (raw.description && !("description" in converted)) converted.description = raw.description;
+        properties[key] = converted;
         if (!unwrapped.optional) required.push(key);
       }
       return {
@@ -35,8 +39,16 @@ function convert(s: z.ZodTypeAny): unknown {
     }
     case Kind.ZodString:
       return { type: "string", ...description };
-    case Kind.ZodNumber:
-      return { type: "number", ...description };
+    case Kind.ZodNumber: {
+      const out: Record<string, unknown> = { type: "number", ...description };
+      const checks = (s as unknown as z.ZodNumber)._def.checks as Array<{ kind: string; value?: number }>;
+      for (const check of checks) {
+        if (check.kind === "int") out.type = "integer";
+        else if (check.kind === "min" && typeof check.value === "number") out.minimum = check.value;
+        else if (check.kind === "max" && typeof check.value === "number") out.maximum = check.value;
+      }
+      return out;
+    }
     case Kind.ZodBoolean:
       return { type: "boolean", ...description };
     default:

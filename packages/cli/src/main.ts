@@ -7,10 +7,14 @@ import * as fs from "node:fs";
 const args = process.argv.slice(2);
 const command = args[0];
 
-// Exit gracefully when a downstream pipe closes early (e.g. `saber ... | head`).
+// When a downstream pipe closes early (e.g. `saber ... | head`), abort the
+// active turn instead of exiting on the spot, so cleanup (session close,
+// turn_complete, child-process teardown) still runs; exit code follows.
+const pipeClosed = { abort: null as null | (() => void) };
 process.stdout.on("error", (e: NodeJS.ErrnoException) => {
-  if (e.code === "EPIPE") process.exit(0);
-  throw e;
+  if (e.code !== "EPIPE") throw e;
+  process.exitCode ??= 0;
+  pipeClosed.abort?.();
 });
 
 function getDataDir(): string {
@@ -77,6 +81,7 @@ async function runExec(args: string[]): Promise<void> {
 
   const controller = new AbortController();
   const timer = timeoutSec !== undefined ? setTimeout(() => controller.abort(), timeoutSec * 1000) : undefined;
+  pipeClosed.abort = () => controller.abort();
 
   const engine = new Engine({
     provider, tools, session, toolContext,
@@ -104,6 +109,7 @@ async function runExec(args: string[]): Promise<void> {
     else if (outcome.kind === "aborted") exitCode = 124;
     else exitCode = 1;
   } finally {
+    pipeClosed.abort = null;
     if (timer) clearTimeout(timer);
     session.close();
     const usage = engine.getUsage();

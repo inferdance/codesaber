@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { createMockProvider, zeroUsage, type Provider, type ProviderEvent } from "@saber/ai";
-import { Engine, SessionLog, createPathPolicy, createTools, type ToolContext } from "../index.js";
+import { Engine, SessionLog, createPathPolicy, createTools, recoverSession, type ToolContext } from "../index.js";
+import type { ToolDefinition } from "../types.js";
 
 let workspace: string;
 let dataDir: string;
@@ -81,6 +82,52 @@ describe("engine failure paths", () => {
     const engine = makeEngine([textStep("never")]);
     const { outcome } = await engine.runTurn({ userMessage: "hi", signal: controller.signal });
     expect(outcome.kind).toBe("aborted");
+  });
+
+  it("skips remaining exclusive tools after abort, and pairs their WAL results", async () => {
+    const controller = new AbortController();
+    const executed: string[] = [];
+    const slow: ToolDefinition = {
+      name: "slow", description: "", parameters: {}, concurrency: "exclusive",
+      async execute(_args, tctx) {
+        await new Promise<void>((resolve) => {
+          if (tctx.signal) tctx.signal.addEventListener("abort", () => resolve(), { once: true });
+          else resolve();
+        });
+        executed.push("slow");
+        return { content: "interrupted", isError: true };
+      },
+    };
+    const writer: ToolDefinition = {
+      name: "writer", description: "", parameters: {}, concurrency: "exclusive",
+      async execute() { executed.push("writer"); return { content: "wrote", isError: false }; },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `abort-batch-${Date.now()}`, {});
+    const engine = new Engine({
+      provider: createMockProvider("mock", [[
+        { type: "tool_call_start", id: "s1", name: "slow" },
+        { type: "tool_call_delta", id: "s1", arguments_delta: "{}" },
+        { type: "tool_call_start", id: "w1", name: "writer" },
+        { type: "tool_call_delta", id: "w1", arguments_delta: "{}" },
+        { type: "finish", reason: "tool_calls", usage: zeroUsage() },
+      ]]),
+      tools: [slow, writer],
+      session,
+      toolContext: ctx,
+      model: "mock",
+    });
+
+    setTimeout(() => controller.abort(), 20);
+    const { outcome } = await engine.runTurn({ userMessage: "two writes", signal: controller.signal });
+
+    expect(outcome.kind).toBe("aborted");
+    expect(executed).toEqual(["slow"]); // writer never started
+
+    // WAL stays paired: both intents have results, writer's is the synthetic abort
+    const log = recoverSession(session.path);
+    expect(log.unfinishedToolCalls).toHaveLength(0);
+    const results = log.events.flatMap((e) => (e.payload.type === "tool_result" ? [e.payload] : []));
+    expect(results.find((r) => r.callId === "w1")?.content).toBe("aborted before execution");
   });
 
   it("rejects a concurrent second turn with busy (single-flight)", async () => {

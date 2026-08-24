@@ -8,11 +8,18 @@ function escapeRx(s: string): string {
   return s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Full regex escaping for literal fallback searches (unlike escapeRx, which
+ *  keeps glob metacharacters alive for glob-segment translation). */
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function expandBraces(pattern: string, out: string[] = []): string[] {
   const m = pattern.match(/\{([^{},]+(?:,[^{},]+)+)\}/);
   if (!m) { out.push(pattern); return out; }
+  const start = m.index ?? 0;
   for (const alt of m[1].split(",")) {
-    expandBraces(pattern.slice(0, m.index) + alt + pattern.slice(m.index! + m[0].length), out);
+    expandBraces(pattern.slice(0, start) + alt + pattern.slice(start + m[0].length), out);
     if (out.length > 64) break;
   }
   return out;
@@ -75,18 +82,37 @@ export interface WalkResult {
 }
 
 /**
- * Recursive walker with gitignore awareness. Synchronous by design for the
- * headless CLI; when the M1 server hosts it, wrap in a worker or convert to
- * fs.promises so it cannot block the event loop.
+ * Recursive walker with gitignore awareness; the root may be a file or a
+ * directory. Synchronous by design for the headless CLI; when the M1 server
+ * hosts it, wrap in a worker or convert to fs.promises so it cannot block
+ * the event loop.
  */
 export function walk(opt: WalkOptions): WalkResult {
   const ignores = loadGitignore(opt.root);
   const files: Array<{ rel: string; abs: string }> = [];
   const matches: Array<{ abs: string; line: number; text: string }> = [];
+  const linePattern = opt.linePattern;
   const maxFiles = opt.maxFiles ?? 5000;
   const maxDepth = opt.maxDepth ?? 16;
   let stopped = false;
   let hidden = 0;
+
+  const scanFile = (abs: string, rel: string): void => {
+    try {
+      const stat = fs.statSync(abs);
+      if (stat.size > 1_000_000) return;
+      const text = fs.readFileSync(abs, "utf-8");
+      if (text.includes("\0")) return;
+      if (!linePattern) return;
+      text.split("\n").some((line, idx) => {
+        if (linePattern.test(line)) {
+          matches.push({ abs, line: idx + 1, text: line.slice(0, 400) });
+          if (matches.length >= (opt.maxMatches ?? 200)) { stopped = true; return true; }
+        }
+        return false;
+      });
+    } catch { /* unreadable file: skip */ }
+  };
 
   const visit = (dir: string, rel: string, depth: number): void => {
     if (stopped || depth > maxDepth) return;
@@ -104,24 +130,20 @@ export function walk(opt: WalkOptions): WalkResult {
       if (opt.filePattern && !opt.filePattern.test(childRel)) continue;
       if (opt.deny?.(childAbs)) { hidden++; continue; }
       files.push({ rel: childRel, abs: childAbs });
-      if (opt.linePattern) {
-        try {
-          const stat = fs.statSync(childAbs);
-          if (stat.size > 1_000_000) continue;
-          const text = fs.readFileSync(childAbs, "utf-8");
-          if (text.includes("\0")) continue;
-          text.split("\n").some((line, idx) => {
-            if (opt.linePattern!.test(line)) {
-              matches.push({ abs: childAbs, line: idx + 1, text: line.slice(0, 400) });
-              if (matches.length >= (opt.maxMatches ?? 200)) { stopped = true; return true; }
-            }
-            return false;
-          });
-        } catch { /* unreadable file: skip */ }
-      }
+      scanFile(childAbs, childRel);
     }
   };
 
+  let rootIsFile = false;
+  try { rootIsFile = fs.statSync(opt.root).isFile(); } catch { return { files, matches, hidden }; }
+  if (rootIsFile) {
+    const rel = path.basename(opt.root);
+    if ((!opt.filePattern || opt.filePattern.test(rel)) && !opt.deny?.(opt.root)) {
+      files.push({ rel, abs: opt.root });
+      scanFile(opt.root, rel);
+    }
+    return { files, matches, hidden };
+  }
   visit(opt.root, "", 0);
   return { files, matches, hidden };
 }

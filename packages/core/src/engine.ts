@@ -195,7 +195,7 @@ export class Engine {
         break;
       }
 
-      const results = await this.executeTools(turnId, stepId, toolCalls);
+      const results = await this.executeTools(turnId, stepId, toolCalls, signal);
       const resultBlocks: Block[] = results.map(([callId, name, result]) => ({
         type: "tool_result" as const, call_id: callId, content: result.content, is_error: result.isError,
       }));
@@ -214,6 +214,7 @@ export class Engine {
   private async executeTools(
     turnId: string, stepId: string,
     calls: Array<{ id: string; name: string; arguments: unknown }>,
+    signal?: AbortSignal,
   ): Promise<Array<[string, string, ToolResult]>> {
     const executable: typeof calls = [];
     const results: Array<[string, string, ToolResult]> = [];
@@ -222,7 +223,7 @@ export class Engine {
       this.dispatch({ type: "tool_started", turnId, stepId, callId: call.id, name: call.name });
       executable.push(call);
     }
-    const batchResults = await this.executeBatch(executable);
+    const batchResults = await this.executeBatch(executable, signal);
     for (let i = 0; i < executable.length; i++) {
       const result = batchResults[i];
       this.dispatch({ type: "tool_result", callId: executable[i].id, name: executable[i].name, content: result.content, isError: result.isError });
@@ -232,7 +233,7 @@ export class Engine {
     return results;
   }
 
-  private async executeBatch(calls: Array<{ name: string; arguments: unknown }>): Promise<ToolResult[]> {
+  private async executeBatch(calls: Array<{ name: string; arguments: unknown }>, signal?: AbortSignal): Promise<ToolResult[]> {
     const results: ToolResult[] = new Array(calls.length);
     const inFlight: Array<Promise<void>> = [];
     const exclusive: Array<() => Promise<void>> = [];
@@ -243,6 +244,12 @@ export class Engine {
         return;
       }
       const run = async (): Promise<void> => {
+        // No new side-effecting tool may start after abort; the skipped call
+        // still gets a synthetic result so WAL intent/result stay paired.
+        if (tool.concurrency !== "read_only" && signal?.aborted) {
+          results[index] = { content: "aborted before execution", isError: true };
+          return;
+        }
         results[index] = await tool.execute(isRecord(call.arguments) ? call.arguments : {}, this.opts.toolContext);
       };
       if (tool.concurrency === "read_only") inFlight.push(run());
