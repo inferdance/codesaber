@@ -6,42 +6,36 @@ on:
   pull_request:
 
 jobs:
+  check:
+    name: lint + test + build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+
   docs:
-    name: docs lint (placeholder until TS workspace lands)
+    name: docs sanity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check docs exist
+      - name: Check canonical docs exist
         run: |
           test -f README.md
           test -f LICENSE
           test -f AGENTS.md
           test -d docs/superpowers/specs
-
-  # Enable these jobs when the TS workspace (packages/ + pnpm-workspace.yaml) lands:
-  #
-  # test:
-  #   name: lint + test + build
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: pnpm/action-setup@v4
-  #       with: { version: 9 }
-  #     - uses: actions/setup-node@v4
-  #       with: { node-version: 22, cache: pnpm }
-  #     - run: pnpm install --frozen-lockfile
-  #     - run: pnpm lint
-  #     - run: pnpm test
-  #     - run: pnpm build
-  #
-  # sandbox:
-  #   name: seatbelt tests (macos)
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: pnpm/action-setup@v4
-  #       with: { version: 9 }
-  #     - uses: actions/setup-node@v4
-  #       with: { node-version: 22, cache: pnpm }
-  #     - run: pnpm install --frozen-lockfile
-  #     - run: pnpm --filter @saber/sandbox --fail-if-no-match test
+          test -d docs/research

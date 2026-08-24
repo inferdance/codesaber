@@ -189,7 +189,7 @@ export class Engine {
     const results: Array<[string, ToolResult]> = [];
     for (const call of calls) {
       try {
-        this.opts.session.append("tool_call", call, true);
+        this.opts.session.append("tool_call", { call_id: call.id, name: call.name, arguments: call.arguments }, true);
         this.emit({ type: "tool_started", turnId, stepId, callId: call.id, name: call.name });
         executable.push(call);
       } catch (e) {
@@ -208,23 +208,22 @@ export class Engine {
   }
 
   private async executeBatch(calls: Array<{ name: string; args: Record<string, unknown> }>): Promise<ToolResult[]> {
-    const readOnly: Array<{ index: number; tool: ToolDefinition; args: Record<string, unknown> }> = [];
-    const exclusive: Array<{ index: number; tool: ToolDefinition; args: Record<string, unknown> }> = [];
-    calls.forEach((call, index) => {
-      const tool = this.opts.tools.find((t) => t.name === call.name);
-      if (!tool) readOnly.push({ index, tool: null as any, args: call.args });
-      else if (tool.concurrency === "read_only") readOnly.push({ index, tool, args: call.args });
-      else exclusive.push({ index, tool, args: call.args });
-    });
+    const slots: Array<{ index: number; tool: ToolDefinition | null; args: Record<string, unknown> }> = calls.map((call, index) => ({
+      index, tool: this.opts.tools.find((t) => t.name === call.name) ?? null, args: call.args,
+    }));
     const results: ToolResult[] = new Array(calls.length);
-    const readPromises = readOnly.map(async (slot) => {
-      if (!slot.tool) return { content: `unknown tool`, isError: true };
-      return slot.tool.execute(slot.args, this.opts.toolContext);
-    });
-    const readResults = await Promise.all(readPromises);
+    const readOnly = slots.filter((s) => s.tool !== null && s.tool.concurrency === "read_only");
+    const exclusive = slots.filter((s) => s.tool !== null && s.tool.concurrency !== "read_only");
+    const missing = slots.filter((s) => s.tool === null);
+    for (const slot of missing) {
+      results[slot.index] = { content: `unknown tool: ${calls[slot.index].name}`, isError: true };
+    }
+    const readResults = await Promise.all(
+      readOnly.map((slot) => slot.tool!.execute(slot.args, this.opts.toolContext)),
+    );
     readOnly.forEach((slot, i) => { results[slot.index] = readResults[i]; });
     for (const slot of exclusive) {
-      results[slot.index] = await slot.tool.execute(slot.args, this.opts.toolContext);
+      results[slot.index] = await slot.tool!.execute(slot.args, this.opts.toolContext);
     }
     return results;
   }

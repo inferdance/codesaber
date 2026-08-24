@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createOpenAiProvider, createAnthropicProvider } from "@saber/ai";
-import { Engine, SessionLog, createPathPolicy, checkRead, checkWrite, type ToolDefinition, type ToolContext, type ToolResult } from "@saber/core";
+import { Engine, SessionLog, createPathPolicy, createTools, type ToolContext } from "@saber/core";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -55,69 +55,7 @@ async function runExec(args: string[]): Promise<void> {
     readFiles: new Set(),
   };
 
-  // Minimal tool set for M0
-  const tools: ToolDefinition[] = [
-    {
-      name: "bash",
-      description: "Runs a bash command",
-      parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
-      concurrency: "exclusive",
-      async execute(args) {
-        const { execa } = await import("execa");
-        try {
-          const result = await execa("bash", ["-c", args.command as string], {
-            cwd: toolContext.cwd,
-            timeout: 120_000,
-            env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", LANG: process.env.LANG ?? "", TMPDIR: process.env.TMPDIR ?? "" },
-            extendEnv: false,
-            killSignal: "SIGKILL",
-            reject: false,
-          });
-          const output = result.stdout || result.stderr || "(no output)";
-          return { content: `${output}\n[exit: ${result.exitCode}]`, isError: result.exitCode !== 0 };
-        } catch (e) {
-          return { content: `bash failed: ${e}`, isError: true };
-        }
-      },
-    },
-    {
-      name: "read",
-      description: "Reads a file",
-      parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-      concurrency: "read_only",
-      async execute(args) {
-        const denied = checkRead(toolContext.policy, args.path as string);
-        if (denied) return { content: denied, isError: true };
-        try {
-          const content = await fs.promises.readFile(args.path as string, "utf-8");
-          const lines = content.split("\n").slice(0, 2000);
-          const numbered = lines.map((l, i) => `${String(i + 1).padStart(6)}\t${l.slice(0, 2000)}`).join("\n");
-          toolContext.readFiles.add(path.resolve(args.path as string));
-          return { content: numbered, isError: false };
-        } catch (e) {
-          return { content: `read failed: ${e}`, isError: true };
-        }
-      },
-    },
-    {
-      name: "write",
-      description: "Creates or overwrites a file",
-      parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] },
-      concurrency: "exclusive",
-      async execute(args) {
-        const denied = checkWrite(toolContext.policy, args.path as string);
-        if (denied) return { content: denied, isError: true };
-        const resolved = path.resolve(args.path as string);
-        try {
-          await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
-          await fs.promises.writeFile(resolved, args.content as string);
-          return { content: `wrote ${args.path}`, isError: false };
-        } catch (e) {
-          return { content: `write failed: ${e}`, isError: true };
-        }
-      },
-    },
-  ];
+  const tools = createTools(toolContext);
 
   const engine = new Engine({
     provider, tools, session, toolContext,
@@ -125,7 +63,17 @@ async function runExec(args: string[]): Promise<void> {
     onEvent: jsonMode ? (e) => console.log(JSON.stringify(e)) : undefined,
   });
 
-  const system = `You are saber, a coding agent. Be direct. Read before editing. Run tests to verify.\n# Environment\n- cwd: ${cwd}\n- platform: ${process.platform}`;
+  const system = `You are saber, a coding agent. Be direct and surgical.
+
+# Environment
+- cwd: ${cwd}
+- platform: ${process.platform}
+
+# Rules
+- Read a file before editing it; use edit (not sed) for code changes.
+- Prefer grep/glob to locate code over listing directories with bash.
+- After changing code, verify with tests or a build via bash.
+- Cite locations as path:line in your final answer.`;
 
   const { answer, outcome } = await engine.runTurn({ userMessage: prompt, system });
   if (!jsonMode) console.log(answer);
