@@ -126,6 +126,9 @@ export function createAnthropicProvider(config: AnthropicConfig): Provider {
               case "message_delta":
                 if (v.delta?.stop_reason) finishReason = v.delta.stop_reason;
                 if (v.usage?.output_tokens) usage.output_tokens = v.usage.output_tokens;
+                // some anthropic-compatible endpoints (e.g. GLM) only report
+                // input tokens in the final delta, not in message_start
+                if (v.usage?.input_tokens) usage.input_tokens = Math.max(usage.input_tokens, v.usage.input_tokens);
                 break;
               case "message_stop": {
                 usage.cost_usd = estimateCostUsd(request.model || config.defaultModel, usage);

@@ -48,13 +48,20 @@ async function runExec(args: string[]): Promise<void> {
   const auth = getApiKey();
   if (!auth) { console.error("error: set ANTHROPIC_API_KEY or OPENAI_API_KEY"); process.exit(1); }
 
+  // Optional endpoint override for OpenAI/Anthropic-compatible providers
+  // (e.g. GLM's anthropic-compatible API, DeepSeek's openai-compatible API).
+  const baseUrl = process.env.SABER_BASE_URL;
+  if (baseUrl && !/^https?:\/\//.test(baseUrl)) {
+    console.error("error: SABER_BASE_URL must be an http(s) URL"); process.exit(2);
+  }
+
   const cwd = process.cwd();
   const dataDir = getDataDir();
   const sessionId = `exec-${Date.now()}`;
 
   const provider = auth.isAnthropic
-    ? createAnthropicProvider({ baseUrl: "https://api.anthropic.com", apiKey: auth.key, defaultModel: model ?? "claude-sonnet-4-5-20250929" })
-    : createOpenAiProvider({ name: "openai", baseUrl: "https://api.openai.com/v1", apiKey: auth.key, defaultModel: model ?? "gpt-4o" });
+    ? createAnthropicProvider({ baseUrl: baseUrl ?? "https://api.anthropic.com", apiKey: auth.key, defaultModel: model ?? "claude-sonnet-4-5-20250929" })
+    : createOpenAiProvider({ name: "openai", baseUrl: baseUrl ?? "https://api.openai.com/v1", apiKey: auth.key, defaultModel: model ?? "gpt-4o" });
 
   const session = SessionLog.create(path.join(dataDir, "sessions"), sessionId, {
     protocol_version: "0.2.0", engine_version: "0.1.0", cwd, model,
@@ -112,7 +119,7 @@ async function runDoctor(): Promise<void> {
   for (const key of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SABER_ANTHROPIC_KEY", "SABER_OPENAI_KEY"]) {
     console.log(`  ${key}: ${process.env[key] ? "✓" : "  not set"}`);
   }
-  console.log(`\nEnvironment:\n  cwd: ${process.cwd()}\n  platform: ${process.platform}\n  data: ${getDataDir()}`);
+  console.log(`\nEnvironment:\n  cwd: ${process.cwd()}\n  platform: ${process.platform}\n  data: ${getDataDir()}${process.env.SABER_BASE_URL ? `\n  base URL override: ${process.env.SABER_BASE_URL}` : ""}`);
 }
 
 function help(): void {

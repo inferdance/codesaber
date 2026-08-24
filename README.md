@@ -31,10 +31,19 @@ git clone https://github.com/inferdance/codesaber.git
 cd codesaber
 pnpm install
 
-export OPENAI_API_KEY=...      # or ANTHROPIC_API_KEY
+export ANTHROPIC_API_KEY=...      # or OPENAI_API_KEY
 pnpm saber exec -p "read README.md and summarize it"
-pnpm test                      # vitest across packages
-pnpm saber doctor              # health check
+pnpm test                         # vitest across packages
+pnpm saber doctor                 # health check
+```
+
+Works with any Anthropic/OpenAI-compatible endpoint via `SABER_BASE_URL`
+(e.g. GLM's anthropic-compatible API, DeepSeek's openai-compatible API):
+
+```bash
+export SABER_BASE_URL=https://open.bigmodel.cn/api/anthropic
+export SABER_ANTHROPIC_KEY=...
+pnpm saber exec -p "..." --model glm-5.3
 ```
 
 ## Architecture

@@ -15,6 +15,8 @@ import { execa } from "execa";
 const key = process.env.SABER_ANTHROPIC_KEY ?? process.env.ANTHROPIC_API_KEY
   ?? process.env.SABER_OPENAI_KEY ?? process.env.OPENAI_API_KEY;
 
+const smokeModel = process.env.SABER_SMOKE_MODEL;
+
 describe.skipIf(!key)("saber exec against a real model", () => {
   it("completes read → edit → bash → final in a real workspace", { timeout: 180_000 }, async () => {
     const workspace = mkdtempSync(path.join(tmpdir(), "saber-smoke-"));
@@ -25,6 +27,7 @@ describe.skipIf(!key)("saber exec against a real model", () => {
         "exec",
         "-p", "Read greeting.txt, change 'Hello' to 'Goodbye' using the edit tool, then run `cat greeting.txt` via bash to verify, and reply with the final content.",
         "--timeout", "150",
+        ...(smokeModel ? ["--model", smokeModel] : []),
       ], {
         cwd: workspace,
         env: {

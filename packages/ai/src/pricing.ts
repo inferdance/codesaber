@@ -25,6 +25,8 @@ const TABLE: Price[] = [
   { prefix: "claude-haiku", input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
   { prefix: "deepseek-chat", input: 0.27, output: 1.1, cacheRead: 0.07 },
   { prefix: "deepseek-reasoner", input: 0.55, output: 2.19, cacheRead: 0.14 },
+  { prefix: "deepseek-v4-flash", input: 0.14, output: 0.28, cacheRead: 0.0028 },
+  { prefix: "deepseek-v4-pro", input: 0.435, output: 0.87, cacheRead: 0.003625 },
 ];
 
 const PER_MTOK = 1_000_000;
