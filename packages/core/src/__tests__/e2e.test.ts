@@ -114,7 +114,7 @@ describe("E2E: mock provider drives the full agent loop", () => {
     };
     const session = new SessionLog(path.join(dataDir, "sessions"), "e2e-2", { cwd: workspace });
     // Simulate a crash between WAL intent and result
-    session.append("tool_call", { id: "c9", name: "bash", arguments: { command: "echo hi" } }, true);
+    session.append("tool_call", { call_id: "c9", name: "bash", arguments: { command: "echo hi" } }, true);
 
     const log = recoverSession(session.path);
     expect(log.unfinishedToolCalls).toHaveLength(1);

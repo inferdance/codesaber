@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -b",
     "test": "vitest run",
-    "lint": "tsc -b",
+    "lint": "tsc -b && tsc -p packages/core/tsconfig.tests.json && tsc -p packages/ai/tsconfig.tests.json",
     "saber": "tsx packages/cli/src/main.ts"
   },
   "devDependencies": {

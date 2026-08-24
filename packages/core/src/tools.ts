@@ -16,6 +16,8 @@ function parseArgs<T>(schema: z.ZodType<T>, args: Args): { ok: true; value: T } 
   return { ok: true, value: parsed.data };
 }
 
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
 /** Head/tail-preserving truncation: the middle carries the least signal. */
 export function truncateMiddle(text: string, max = 30_000): string {
   if (text.length <= max) return text;
@@ -26,13 +28,9 @@ export function truncateMiddle(text: string, max = 30_000): string {
 
 // ─── edit: four-level tolerant replacement ─────────────────────────
 
-export interface EditOutcome {
-  ok: boolean;
-  content?: string;
-  level?: string;
-  replaced?: number;
-  error?: string;
-}
+export type EditOutcome =
+  | { ok: true; content: string; level: string; replaced: number }
+  | { ok: false; error: string };
 
 function unescapeJs(s: string): string {
   return s.replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\r/g, "").replace(/\\r/g, "\r");
@@ -92,16 +90,23 @@ function reindentWindow(oldLines: string[], newLines: string[], winLines: string
 
 interface LineWindow { start: number; lines: string[]; indent: string }
 
-function findLineWindows(content: string, oldStr: string, mode: "trimEnd" | "trim"): LineWindow[] {
+type WindowMode = "trimEnd" | "trim" | "collapse";
+
+const NORM: Record<WindowMode, (s: string) => string> = {
+  trimEnd: (s) => s.trimEnd(),
+  trim: (s) => s.trim(),
+  collapse: (s) => s.replace(/\s+/g, " ").trim(),
+};
+
+function findLineWindows(content: string, oldStr: string, mode: WindowMode): LineWindow[] {
+  const norm = NORM[mode];
   const lines = content.split("\n");
   const oldLines = oldStr.split("\n");
   const windows: LineWindow[] = [];
   for (let i = 0; i + oldLines.length <= lines.length; i++) {
     let ok = true;
     for (let j = 0; j < oldLines.length; j++) {
-      const a = mode === "trimEnd" ? lines[i + j].trimEnd() : lines[i + j].trim();
-      const b = mode === "trimEnd" ? oldLines[j].trimEnd() : oldLines[j].trim();
-      if (a !== b) { ok = false; break; }
+      if (norm(lines[i + j]) !== norm(oldLines[j])) { ok = false; break; }
     }
     if (!ok) continue;
     const first = lines.slice(i, i + oldLines.length).find((l) => l.trim());
@@ -112,10 +117,11 @@ function findLineWindows(content: string, oldStr: string, mode: "trimEnd" | "tri
 
 /**
  * Tolerant replacement, tried in order of strictness:
- *   1. exact            — byte-for-byte
- *   2. escape-normalized— model emitted literal \n / \t
- *   3. trailing-ws      — per-line trailing whitespace ignored
- *   4. indent-flexible  — per-line full trim; new_str re-indented to match
+ *   1. exact               — byte-for-byte
+ *   2. escape-normalized   — model emitted literal \n / \t
+ *   3. trailing-ws         — per-line trailing whitespace ignored
+ *   4. indent-flexible     — per-line full trim; new_str re-indented to match
+ *   5. whitespace-normalized— internal whitespace runs collapsed for matching
  * Structural guard at every fuzzy level: line count must be identical,
  * so a "match" can never collapse or explode the file.
  */
@@ -144,7 +150,11 @@ export function applyEdit(content: string, rawOld: string, rawNew: string, repla
     return { ok: true, content: next.replace(/\n/g, eol), level: level.name, replaced: replaceAll ? n : 1 };
   }
 
-  for (const [name, mode] of [["trailing-ws", "trimEnd"], ["indent-flexible", "trim"]] as const) {
+  for (const [name, mode] of [
+    ["trailing-ws", "trimEnd"],
+    ["indent-flexible", "trim"],
+    ["whitespace-normalized", "collapse"],
+  ] as Array<[string, WindowMode]>) {
     const windows = findLineWindows(body, oldStr, mode);
     if (windows.length === 0) continue;
     if (windows.length > 1 && !replaceAll) {
@@ -161,7 +171,7 @@ export function applyEdit(content: string, rawOld: string, rawNew: string, repla
     return { ok: true, content: lines.join(eol), level: name, replaced: targets.length };
   }
 
-  return { ok: false, error: "old_str not found (tried exact, escape-normalized, trailing-ws, indent-flexible). The file may have changed — read it again and copy old_str verbatim." };
+  return { ok: false, error: "old_str not found (tried exact, escape-normalized, trailing-ws, indent-flexible, whitespace-normalized). The file may have changed — read it again and copy old_str verbatim." };
 }
 
 // ─── glob matching (also used for gitignore) ────────────────────────
@@ -227,15 +237,23 @@ interface WalkOptions {
   filePattern?: RegExp;   // only return files matching
   linePattern?: RegExp;   // additionally grep contents
   maxMatches?: number;
+  deny?: (abs: string) => boolean;  // per-file policy gate; denied files are never read
 }
 
-function walk(opt: WalkOptions): { files: Array<{ rel: string; abs: string }>; matches: Array<{ rel: string; line: number; text: string }> } {
+interface WalkResult {
+  files: Array<{ rel: string; abs: string }>;
+  matches: Array<{ abs: string; line: number; text: string }>;
+  hidden: number;  // files skipped by the deny gate (never read, so match count unknown)
+}
+
+function walk(opt: WalkOptions): WalkResult {
   const ignores = loadGitignore(opt.root);
   const files: Array<{ rel: string; abs: string }> = [];
-  const matches: Array<{ rel: string; line: number; text: string }> = [];
+  const matches: Array<{ abs: string; line: number; text: string }> = [];
   const maxFiles = opt.maxFiles ?? 5000;
   const maxDepth = opt.maxDepth ?? 16;
   let stopped = false;
+  let hidden = 0;
 
   const visit = (dir: string, rel: string, depth: number): void => {
     if (stopped || depth > maxDepth) return;
@@ -251,6 +269,7 @@ function walk(opt: WalkOptions): { files: Array<{ rel: string; abs: string }>; m
       if (!entry.isFile()) continue;
       if (files.length >= maxFiles) { stopped = true; return; }
       if (opt.filePattern && !opt.filePattern.test(childRel)) continue;
+      if (opt.deny?.(childAbs)) { hidden++; continue; }
       files.push({ rel: childRel, abs: childAbs });
       if (opt.linePattern) {
         try {
@@ -260,7 +279,7 @@ function walk(opt: WalkOptions): { files: Array<{ rel: string; abs: string }>; m
           if (text.includes("\0")) continue;
           text.split("\n").some((line, idx) => {
             if (opt.linePattern!.test(line)) {
-              matches.push({ rel: childRel, line: idx + 1, text: line.slice(0, 400) });
+              matches.push({ abs: childAbs, line: idx + 1, text: line.slice(0, 400) });
               if (matches.length >= (opt.maxMatches ?? 200)) { stopped = true; return true; }
             }
             return false;
@@ -271,7 +290,7 @@ function walk(opt: WalkOptions): { files: Array<{ rel: string; abs: string }>; m
   };
 
   visit(opt.root, "", 0);
-  return { files, matches };
+  return { files, matches, hidden };
 }
 
 // ─── ripgrep detection ──────────────────────────────────────────────
@@ -284,18 +303,11 @@ function hasRipgrep(): Promise<boolean> {
   return rgProbe;
 }
 
-// ─── policy filter for grep output (drop lines from denied files) ──
+// ─── ripgrep JSON event (structured matches; no path parsing fragility) ──
 
-function filterDeniedLines(lines: string[], ctx: ToolContext): string {
-  const kept: string[] = [];
-  let dropped = 0;
-  for (const line of lines) {
-    const file = line.split(":", 1)[0];
-    if (file && checkRead(ctx.policy, file)) { dropped++; continue; }
-    kept.push(line);
-  }
-  if (dropped > 0) kept.push(`[${dropped} result lines redacted by read policy]`);
-  return kept.join("\n");
+interface RgEvent {
+  type: string;
+  data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } };
 }
 
 // ─── tool schemas ───────────────────────────────────────────────────
@@ -305,7 +317,11 @@ const BashArgs = z.object({
   timeout_ms: z.number().int().min(1_000).max(600_000).optional(),
 });
 
-const ReadArgs = z.object({ path: z.string().min(1) });
+const ReadArgs = z.object({
+  path: z.string().min(1),
+  offset: z.number().int().min(1).optional(),
+  limit: z.number().int().min(1).max(2000).optional(),
+});
 
 const WriteArgs = z.object({
   path: z.string().min(1),
@@ -334,6 +350,11 @@ const GlobArgs = z.object({
 
 export function createTools(ctx: ToolContext): ToolDefinition[] {
   const resolve = (p: string): string => path.resolve(ctx.cwd, p);
+  const deny = (abs: string): boolean => checkRead(ctx.policy, abs) !== null;
+  const display = (abs: string): string => {
+    const rel = path.relative(ctx.cwd, abs);
+    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : abs;
+  };
 
   const bash: ToolDefinition = {
     name: "bash",
@@ -353,10 +374,14 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
     async execute(args) {
       const parsed = parseArgs(BashArgs, args);
       if (!parsed.ok) return parsed.result;
+      const timeoutMs = parsed.value.timeout_ms ?? 120_000;
+      let timedOut = false;
       try {
-        const result = await execa("bash", ["-c", parsed.value.command], {
+        // detached → the command runs as its own process-group leader; on
+        // timeout we SIGKILL the whole group so grandchildren cannot survive
+        // (execa has no killDescendants option).
+        const subprocess = execa("bash", ["-c", parsed.value.command], {
           cwd: ctx.cwd,
-          timeout: parsed.value.timeout_ms ?? 120_000,
           env: {
             PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "",
             LANG: process.env.LANG ?? "", TMPDIR: process.env.TMPDIR ?? "",
@@ -364,14 +389,27 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
           extendEnv: false,
           killSignal: "SIGKILL",
           reject: false,
+          detached: true,
+          maxBuffer: 10 * 1024 * 1024,
         });
+        const timer = setTimeout(() => {
+          timedOut = true;
+          if (subprocess.pid) {
+            try { process.kill(-subprocess.pid, "SIGKILL"); } catch { /* already gone */ }
+          }
+        }, timeoutMs);
+        let result;
+        try { result = await subprocess; } finally { clearTimeout(timer); }
         const parts: string[] = [];
         if (result.stdout) parts.push(result.stdout);
         if (result.stderr) parts.push(`[stderr]\n${result.stderr}`);
         const output = truncateMiddle(parts.join("\n") || "(no output)");
-        return { content: `${output}\n[exit: ${result.exitCode}]`, isError: result.exitCode !== 0 };
+        const exitLabel = result.exitCode !== null && result.exitCode !== undefined
+          ? String(result.exitCode)
+          : `signal ${result.signal ?? "SIGKILL"}${timedOut ? ` (timed out after ${timeoutMs}ms)` : ""}`;
+        return { content: `${output}\n[exit: ${exitLabel}]`, isError: result.exitCode !== 0 || timedOut };
       } catch (e) {
-        return { content: `bash failed: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+        return { content: `bash failed: ${errMsg(e)}`, isError: true };
       }
     },
   };
@@ -379,11 +417,15 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
   const read: ToolDefinition = {
     name: "read",
     description:
-      "Reads a file and returns it with line numbers (first 2000 lines). " +
-      "You must read a file before editing it.",
+      "Reads a file and returns it with absolute line numbers (default first 2000 lines). " +
+      "Pass offset/limit to page through long files. You must read a file before editing it.",
     parameters: {
       type: "object",
-      properties: { path: { type: "string", description: "file path, relative to cwd or absolute" } },
+      properties: {
+        path: { type: "string", description: "file path, relative to cwd or absolute" },
+        offset: { type: "number", description: "1-based line to start from" },
+        limit: { type: "number", description: "max lines to return (1-2000)" },
+      },
       required: ["path"],
     },
     concurrency: "read_only",
@@ -396,13 +438,18 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
         const abs = resolve(parsed.value.path);
         const content = await fs.promises.readFile(abs, "utf-8");
         const allLines = content.split("\n");
-        const lines = allLines.slice(0, 2000);
-        const numbered = lines.map((l, i) => `${String(i + 1).padStart(6)}\t${l.slice(0, 2000)}`).join("\n");
+        const offset = parsed.value.offset ?? 1;
+        const limit = parsed.value.limit ?? 2000;
+        const start = Math.min(offset - 1, allLines.length);
+        const lines = allLines.slice(start, start + limit);
+        const numbered = lines.map((l, i) => `${String(start + i + 1).padStart(6)}\t${l.slice(0, 2000)}`).join("\n");
         ctx.readFiles.add(abs);
-        const note = allLines.length > 2000 ? `\n[${allLines.length} lines total, showing first 2000]` : "";
+        const note = start + lines.length < allLines.length
+          ? `\n[showing lines ${start + 1}-${start + lines.length} of ${allLines.length}]`
+          : "";
         return { content: numbered + note, isError: false };
       } catch (e) {
-        return { content: `read failed: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+        return { content: `read failed: ${errMsg(e)}`, isError: true };
       }
     },
   };
@@ -432,7 +479,7 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
         const n = parsed.value.content.split("\n").length;
         return { content: `wrote ${n} lines to ${parsed.value.path}`, isError: false };
       } catch (e) {
-        return { content: `write failed: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+        return { content: `write failed: ${errMsg(e)}`, isError: true };
       }
     },
   };
@@ -441,8 +488,8 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
     name: "edit",
     description:
       "Replaces old_str with new_str in a file. old_str must identify at most one location unless replace_all is true. " +
-      "Matching tolerates literal \\n escapes, trailing whitespace, and indentation differences " +
-      "(new_str is re-indented to match the file), but line count must be identical. " +
+      "Matching tolerates literal \\n escapes, trailing whitespace, indentation differences " +
+      "(new_str is re-indented to match the file), and collapsed internal whitespace — but line count must be identical. " +
       "The file must have been read (or written) in this session first.",
     parameters: {
       type: "object",
@@ -469,11 +516,11 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
       try {
         const content = await fs.promises.readFile(abs, "utf-8");
         const outcome = applyEdit(content, parsed.value.old_str, parsed.value.new_str, parsed.value.replace_all ?? false);
-        if (!outcome.ok) return { content: outcome.error!, isError: true };
-        await fs.promises.writeFile(abs, outcome.content!);
+        if (!outcome.ok) return { content: outcome.error, isError: true };
+        await fs.promises.writeFile(abs, outcome.content);
         return { content: `replaced ${outcome.replaced} occurrence(s) in ${parsed.value.path} [match: ${outcome.level}]`, isError: false };
       } catch (e) {
-        return { content: `edit failed: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+        return { content: `edit failed: ${errMsg(e)}`, isError: true };
       }
     },
   };
@@ -483,7 +530,8 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
     description:
       "Searches file contents with a regular expression (smart-case: case-insensitive unless the pattern has capitals). " +
       "Uses ripgrep when installed, falls back to a built-in walker. " +
-      "Respects .gitignore and skips node_modules/dist/.git. Optional glob filters files, e.g. \"*.ts\".",
+      "Respects .gitignore, skips node_modules/dist/.git, and hides files denied by the read policy. " +
+      "Optional glob filters files, e.g. \"*.ts\".",
     parameters: {
       type: "object",
       properties: {
@@ -503,15 +551,32 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
 
       if (await hasRipgrep()) {
         try {
-          const rgArgs = ["--line-number", "--no-heading", "--smart-case", "--max-count", "50"];
+          const rgArgs = ["--json", "--smart-case", "--max-count", "50"];
           if (parsed.value.glob) rgArgs.push("--glob", parsed.value.glob);
           rgArgs.push("--", parsed.value.pattern, searchPath);
           const result = await execa("rg", rgArgs, {
             cwd: ctx.cwd, timeout: 30_000, reject: false, maxBuffer: 10 * 1024 * 1024,
           });
           if (result.exitCode === 2) return { content: `grep failed: ${result.stderr || "rg error"}`, isError: true };
-          if (result.exitCode === 1 || !result.stdout) return { content: "no matches", isError: false };
-          return { content: truncateMiddle(filterDeniedLines(result.stdout.split("\n"), ctx)), isError: false };
+          const out: string[] = [];
+          let redacted = 0;
+          for (const line of result.stdout.split("\n")) {
+            if (!line || out.length >= 200) continue;
+            let evt: RgEvent;
+            try { evt = JSON.parse(line) as RgEvent; } catch { continue; }
+            if (evt.type !== "match") continue;
+            const file = evt.data?.path?.text;
+            const text = evt.data?.lines?.text?.replace(/\r?\n$/, "");
+            const lineNo = evt.data?.line_number;
+            if (!file || text === undefined || lineNo === undefined) continue;
+            if (deny(file)) { redacted++; continue; }
+            out.push(`${display(file)}:${lineNo}:${text.slice(0, 400)}`);
+          }
+          if (out.length === 0) {
+            return { content: redacted > 0 ? `no matches (${redacted} hidden by read policy)` : "no matches", isError: false };
+          }
+          if (redacted > 0) out.push(`[${redacted} matches hidden by read policy]`);
+          return { content: truncateMiddle(out.join("\n")), isError: false };
         } catch { /* fall through to walker */ }
       }
 
@@ -520,10 +585,13 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
       try { linePattern = new RegExp(parsed.value.pattern, flags); }
       catch { linePattern = new RegExp(escapeRx(parsed.value.pattern), flags); }
       const filePattern = parsed.value.glob ? globToRegExp(parsed.value.glob.includes("/") ? parsed.value.glob : `**/${parsed.value.glob}`) : undefined;
-      const { matches } = walk({ root: searchPath, linePattern, filePattern, maxMatches: 200 });
-      if (matches.length === 0) return { content: "no matches", isError: false };
-      const lines = matches.map((m) => `${m.rel}:${m.line}:${m.text}`);
-      return { content: truncateMiddle(filterDeniedLines(lines, ctx)), isError: false };
+      const { matches, hidden } = walk({ root: searchPath, linePattern, filePattern, maxMatches: 200, deny });
+      if (matches.length === 0) {
+        return { content: hidden > 0 ? `no matches (${hidden} files hidden by read policy)` : "no matches", isError: false };
+      }
+      const lines = matches.map((m) => `${display(m.abs)}:${m.line}:${m.text}`);
+      if (hidden > 0) lines.push(`[${hidden} files hidden by read policy]`);
+      return { content: truncateMiddle(lines.join("\n")), isError: false };
     },
   };
 
@@ -531,7 +599,7 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
     name: "glob",
     description:
       "Finds files by glob pattern (supports **, *, ?, {a,b}), sorted by modification time (newest first). " +
-      "Respects .gitignore and skips node_modules/dist/.git. Returns up to 200 paths.",
+      "Respects .gitignore, skips node_modules/dist/.git, and hides files denied by the read policy. Returns up to 200 paths.",
     parameters: {
       type: "object",
       properties: {
@@ -547,13 +615,17 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
       const root = parsed.value.path ? resolve(parsed.value.path) : ctx.cwd;
       const denied = checkRead(ctx.policy, root);
       if (denied) return { content: denied, isError: true };
-      const { files } = walk({ root, filePattern: globToRegExp(parsed.value.pattern), maxFiles: 20_000 });
+      const { files, hidden } = walk({ root, filePattern: globToRegExp(parsed.value.pattern), maxFiles: 20_000, deny });
       const sorted = files
-        .map((f) => ({ ...f, mtime: fs.statSync(f.abs).mtimeMs }))
+        .map((f) => ({ rel: f.rel, mtime: fs.statSync(f.abs).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime)
         .slice(0, 200);
-      if (sorted.length === 0) return { content: "no files matched", isError: false };
-      return { content: sorted.map((f) => f.rel).join("\n") + `\n[${sorted.length} files]`, isError: false };
+      if (sorted.length === 0) {
+        return { content: hidden > 0 ? `no files matched (${hidden} hidden by read policy)` : "no files matched", isError: false };
+      }
+      const out = sorted.map((f) => f.rel);
+      if (hidden > 0) out.push(`[${hidden} files hidden by read policy]`);
+      return { content: out.join("\n"), isError: false };
     },
   };
 

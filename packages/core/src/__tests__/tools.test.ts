@@ -2,9 +2,19 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { createTools, applyEdit } from "../tools.js";
+import { createTools, applyEdit, type EditOutcome } from "../tools.js";
 import { createPathPolicy } from "../policy.js";
 import type { ToolContext } from "../types.js";
+
+// Narrow the EditOutcome union for assertions (expect().toBe() can't narrow).
+function expectOk(out: EditOutcome) {
+  if (!out.ok) throw new Error(`expected ok, got error: ${out.error}`);
+  return out;
+}
+function expectErr(out: EditOutcome) {
+  if (out.ok) throw new Error(`expected error, got ok: ${out.level}`);
+  return out;
+}
 
 let workspace: string;
 let ctx: ToolContext;
@@ -32,35 +42,30 @@ const tool = (name: string) => {
 
 describe("applyEdit levels", () => {
   it("replaces an exact unique match", () => {
-    const out = applyEdit("const a = 1;\nconst b = 2;\n", "const a = 1;", "const a = 42;", false);
-    expect(out.ok).toBe(true);
+    const out = expectOk(applyEdit("const a = 1;\nconst b = 2;\n", "const a = 1;", "const a = 42;", false));
     expect(out.content).toBe("const a = 42;\nconst b = 2;\n");
     expect(out.level).toBe("exact");
   });
 
   it("rejects an ambiguous match without replace_all", () => {
-    const out = applyEdit("x = 1;\nx = 1;\n", "x = 1;", "x = 2;", false);
-    expect(out.ok).toBe(false);
+    const out = expectErr(applyEdit("x = 1;\nx = 1;\n", "x = 1;", "x = 2;", false));
     expect(out.error).toMatch(/matches 2 locations/);
   });
 
   it("replaces every match with replace_all", () => {
-    const out = applyEdit("x = 1;\nx = 1;\n", "x = 1;", "x = 2;", true);
-    expect(out.ok).toBe(true);
+    const out = expectOk(applyEdit("x = 1;\nx = 1;\n", "x = 1;", "x = 2;", true));
     expect(out.content).toBe("x = 2;\nx = 2;\n");
     expect(out.replaced).toBe(2);
   });
 
   it("normalizes literal \\n escapes from the model", () => {
-    const out = applyEdit("alpha\nbeta", "alpha\\nbeta", "gamma\\ndelta", false);
-    expect(out.ok).toBe(true);
+    const out = expectOk(applyEdit("alpha\nbeta", "alpha\\nbeta", "gamma\\ndelta", false));
     expect(out.content).toBe("gamma\ndelta");
     expect(out.level).toBe("escape-normalized");
   });
 
   it("ignores trailing whitespace differences per line", () => {
-    const out = applyEdit("let x = 1;   \nlet y = 2;\t\n", "let x = 1;\nlet y = 2;", "let x = 9;\nlet y = 9;", false);
-    expect(out.ok).toBe(true);
+    const out = expectOk(applyEdit("let x = 1;   \nlet y = 2;\t\n", "let x = 1;\nlet y = 2;", "let x = 9;\nlet y = 9;", false));
     expect(out.content).toBe("let x = 9;\nlet y = 9;\n");
     expect(out.level).toBe("trailing-ws");
   });
@@ -69,8 +74,7 @@ describe("applyEdit levels", () => {
     const file = "function f() {\n  if (x) {\n    return 1;\n  }\n}\n";
     const old = "if (x) {\nreturn 1;\n}";
     const neu = "if (x) {\nreturn 2;\n}";
-    const out = applyEdit(file, old, neu, false);
-    expect(out.ok).toBe(true);
+    const out = expectOk(applyEdit(file, old, neu, false));
     expect(out.level).toBe("indent-flexible");
     expect(out.content).toBe("function f() {\n  if (x) {\n    return 2;\n  }\n}\n");
   });
@@ -79,15 +83,19 @@ describe("applyEdit levels", () => {
     const file = "function f() {\n  if (cond) {\n    return 1;\n  }\n}\n";
     // model dedented the block and added a line; positional transfer is void,
     // so the model's flat block is rebased onto the window's common indent
-    const out = applyEdit(file, "if (cond) {\nreturn 1;\n}", "if (cond) {\nlog(x);\nreturn 1;\n}", false);
-    expect(out.ok).toBe(true);
+    const out = expectOk(applyEdit(file, "if (cond) {\nreturn 1;\n}", "if (cond) {\nlog(x);\nreturn 1;\n}", false));
     expect(out.level).toBe("indent-flexible");
     expect(out.content).toBe("function f() {\n  if (cond) {\n  log(x);\n  return 1;\n  }\n}\n");
   });
 
+  it("matches with internal whitespace collapsed (whitespace-normalized level)", () => {
+    const out = expectOk(applyEdit("const  a   =  1;\n", "const a = 1;", "const a = 2;", false));
+    expect(out.level).toBe("whitespace-normalized");
+    expect(out.content).toBe("const a = 2;\n");
+  });
+
   it("never matches across different line counts (structural guard)", () => {
-    const out = applyEdit("a\nb\nc", "a\nc", "z", false);
-    expect(out.ok).toBe(false);
+    const out = expectErr(applyEdit("a\nb\nc", "a\nc", "z", false));
     expect(out.error).toMatch(/not found/);
   });
 
@@ -97,8 +105,7 @@ describe("applyEdit levels", () => {
   });
 
   it("preserves CRLF line endings", () => {
-    const out = applyEdit("a\r\nb\r\n", "a\r\nb", "c\r\nd", false);
-    expect(out.ok).toBe(true);
+    const out = expectOk(applyEdit("a\r\nb\r\n", "a\r\nb", "c\r\nd", false));
     expect(out.content).toBe("c\r\nd\r\n");
   });
 });
@@ -141,6 +148,16 @@ describe("read/write tools", () => {
     expect(result.content).toContain("2\tsecond");
   });
 
+  it("read pages with offset/limit using absolute line numbers", async () => {
+    writeFileSync(path.join(workspace, "long.txt"), "l1\nl2\nl3\nl4\nl5\n");
+    const result = await tool("read").execute({ path: "long.txt", offset: 2, limit: 2 }, ctx);
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("2\tl2");
+    expect(result.content).toContain("3\tl3");
+    expect(result.content).not.toContain("l1\n");
+    expect(result.content).toMatch(/showing lines 2-3 of 6/);
+  });
+
   it("write is denied outside writable roots", async () => {
     const result = await tool("write").execute({ path: "/etc/saber-should-fail.txt", content: "x" }, ctx);
     expect(result.isError).toBe(true);
@@ -168,6 +185,25 @@ describe("bash tool", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/boom/);
     expect(result.content).toMatch(/\[exit: 3\]/);
+  });
+
+  it("does not inherit arbitrary environment variables", async () => {
+    process.env.SABER_TEST_SECRET = "leak-marker-xyz";
+    try {
+      const result = await tool("bash").execute({ command: "printenv SABER_TEST_SECRET" }, ctx);
+      expect(result.isError).toBe(true);
+      expect(result.content).not.toContain("leak-marker-xyz");
+    } finally {
+      delete process.env.SABER_TEST_SECRET;
+    }
+  });
+
+  it("times out and kills the command", async () => {
+    const started = Date.now();
+    const result = await tool("bash").execute({ command: "sleep 30", timeout_ms: 1000 }, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/timed out/);
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 });
 
@@ -198,6 +234,15 @@ describe("grep tool", () => {
     expect(result.isError).toBe(false);
     expect(result.content).toBe("no matches");
   });
+
+  it("never surfaces secret file contents, on either backend", async () => {
+    writeFileSync(path.join(workspace, "id_rsa"), "GREPSECRET leak-me-99\n");
+    const result = await tool("grep").execute({ pattern: "GREPSECRET" }, ctx);
+    expect(result.isError).toBe(false);
+    expect(result.content).toMatch(/^no matches/);
+    expect(result.content).not.toContain("leak-me-99");
+    expect(result.content).not.toContain("id_rsa");
+  });
 });
 
 describe("glob tool", () => {
@@ -227,5 +272,14 @@ describe("glob tool", () => {
     const result = await tool("glob").execute({ pattern: "**/*.{ts,json}" }, ctx);
     expect(result.content).toMatch(/src\/b\.json/);
     expect(result.content).toMatch(/root\.ts/);
+  });
+
+  it("hides paths denied by the read policy", async () => {
+    writeFileSync(path.join(workspace, "plain.txt"), "x");
+    writeFileSync(path.join(workspace, ".env"), "SECRET=1\n");
+    const result = await tool("glob").execute({ pattern: "**/*" }, ctx);
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("plain.txt");
+    expect(result.content).not.toContain(".env");
   });
 });
