@@ -128,9 +128,6 @@ importers:
 
   packages/web:
     dependencies:
-      '@saber/ai':
-        specifier: workspace:*
-        version: link:../ai
       '@saber/core':
         specifier: workspace:*
         version: link:../core

@@ -21,17 +21,18 @@ import type { SaberPayload } from "./events.js";
 export type WireEvent = { seq: number; sessionId: string } & SaberPayload;
 
 // ─── Commands (client → server, with commandId for idempotency) ────
+// (approve arrives in M2 together with the approval workflow — no phantom
+// commands in the vocabulary until the server actually supports them)
 
 export type SaberCommand =
   | { type: "prompt"; commandId: string; text: string; sessionId?: string }
   | { type: "steer"; commandId: string; text: string; sessionId: string }
-  | { type: "abort"; commandId: string; turnId: string; sessionId: string }
-  | { type: "approve"; commandId: string; granted: boolean; requestId: string; sessionId: string };
+  | { type: "abort"; commandId: string; turnId?: string; sessionId: string };
 
 // ─── Projection (fold events → current state) ──────────────────────
 
 export interface MessageView {
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant" | "tool" | "error";
   content: string;
   toolName?: string;
   isError?: boolean;
@@ -105,6 +106,9 @@ export function projectSession(sessionId: string, events: Array<{ seq: number } 
         });
         break;
       }
+      case "error":
+        projection.messages.push({ role: "error", content: event.message, timestamp: event.seq });
+        break;
       case "turn_started":
         projection.isRunning = true;
         projection.currentTurn = event.turnId;
@@ -123,68 +127,7 @@ export function projectSession(sessionId: string, events: Array<{ seq: number } 
   return projection;
 }
 
+
 // ─── WebSocket Client (shared by Web and TUI) ──────────────────────
 
-export interface SaberClientOptions {
-  url: string;
-  sessionId: string;
-  onEvent: (event: WireEvent) => void;
-  /** Acks (prompt/steer/abort results); a prompt ack carries the sessionId. */
-  onAck?: (ack: { type: "ack"; kind: string; commandId?: string; sessionId?: string; [key: string]: unknown }) => void;
-  onDisconnect?: () => void;
-  onConnect?: () => void;
-}
-
-export class SaberClient {
-  private ws: WebSocket | null = null;
-  private lastSeq = 0;
-  private reconnectDelay = 1000;
-  /** Updated from prompt acks so a client that started a new session
-   *  reconnects (and resubscribes) to the right id after a drop. */
-  sessionId: string;
-
-  constructor(private opts: SaberClientOptions) {
-    this.sessionId = opts.sessionId;
-  }
-
-  connect(): void {
-    this.ws = new WebSocket(this.opts.url);
-    this.ws.onopen = () => {
-      this.opts.onConnect?.();
-      this.ws?.send(JSON.stringify({
-        type: "subscribe",
-        sessionId: this.sessionId,
-        since: this.lastSeq,
-      }));
-    };
-    this.ws.onmessage = (msg) => {
-      try {
-        const parsed = JSON.parse(msg.data as string) as Record<string, unknown>;
-        if (parsed.type === "ack") {
-          if (parsed.kind === "prompt" && typeof parsed.sessionId === "string" && parsed.sessionId) {
-            this.sessionId = parsed.sessionId;
-          }
-          this.opts.onAck?.(parsed as Parameters<NonNullable<SaberClientOptions["onAck"]>>[0]);
-          return;
-        }
-        const event = parsed as unknown as WireEvent;
-        if (typeof event.seq === "number" && event.seq > this.lastSeq) this.lastSeq = event.seq;
-        this.opts.onEvent(event);
-      } catch { /* ignore malformed */ }
-    };
-    this.ws.onclose = () => {
-      this.opts.onDisconnect?.();
-      setTimeout(() => this.connect(), this.reconnectDelay);
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30_000);
-    };
-  }
-
-  send(command: SaberCommand): void {
-    this.ws?.send(JSON.stringify(command));
-  }
-
-  disconnect(): void {
-    this.ws?.close();
-    this.ws = null;
-  }
-}
+export { SaberClient, type SaberClientOptions, type SaberAck } from "./client.js";
