@@ -315,8 +315,7 @@ describe("server: WS round-trip with mock provider", () => {
     expect(second.reason).toBe("done");
   });
 
-  it("SaberClient adopts the sessionId from a prompt ack and sees the full turn", async () => {
-    const { SaberClient } = await import("@saber/core");
+  it("SaberClient adopts the sessionId from a prompt ack and sees the full turn", async () => {    const { SaberClient } = await import("@saber/core");
     const steps: ProviderEvent[][] = [
       [{ type: "text_delta", text_delta: "hi from core client" }, { type: "finish", reason: "stop", usage: zeroUsage() }],
     ];
@@ -347,5 +346,26 @@ describe("server: WS round-trip with mock provider", () => {
     expect(client.sessionId).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
     expect(events.find((e) => e.type === "assistant_message")).toBeDefined();
     client.disconnect();
+  });
+
+  it("serves the built web UI when dist is present", async () => {
+    const { existsSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const webDist = fileURLToPath(new URL("../../../web/dist", import.meta.url));
+    if (!existsSync(webDist)) return; // fresh checkout: build runs after tests in CI
+
+    const server = await createSaberServer({
+      provider: createMockProvider("mock", [[{ type: "finish", reason: "stop", usage: zeroUsage() }]]),
+      model: "mock", cwd: workspace, dataDir,
+    });
+    cleanup.push(() => server.close());
+    await server.listen();
+
+    const index = await server.app.inject({ method: "GET", url: "/" });
+    expect(index.statusCode).toBe(200);
+    expect(index.body).toContain("<div id=\"root\">");
+    // API routes still take precedence over static
+    const health = await server.app.inject({ method: "GET", url: "/api/health" });
+    expect(health.json()).toMatchObject({ ok: true });
   });
 });

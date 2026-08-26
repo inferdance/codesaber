@@ -1,4 +1,4 @@
-import type { SaberCommand, WireEvent } from "./index.js";
+import type { SaberCommand, WireEvent } from "./model.js";
 
 export interface SaberAck {
   type: "ack";
@@ -75,7 +75,8 @@ export class SaberClient {
     this.ws = null;
   }
 
-  /** Switches the subscription to another session; resets the watermark. */
+  /** Switches the subscription to another session; resets the watermark.
+   *  An empty id only unsubscribes (new-chat state before the first prompt). */
   setSession(sessionId: string): void {
     const previous = this.sessionId;
     if (sessionId === previous) return;
@@ -84,7 +85,7 @@ export class SaberClient {
     const socket = this.ws;
     if (socket && socket.readyState === WebSocket.OPEN) {
       if (previous) socket.send(JSON.stringify({ type: "unsubscribe", sessionId: previous }));
-      socket.send(JSON.stringify({ type: "subscribe", sessionId, since: 0 }));
+      if (sessionId) socket.send(JSON.stringify({ type: "subscribe", sessionId, since: 0 }));
     }
   }
 

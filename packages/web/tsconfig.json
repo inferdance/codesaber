@@ -2,11 +2,15 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["vite/client"],
     "baseUrl": ".",
     "paths": {
-      "@saber/ai": ["../ai/src/index.ts"],
-      "@saber/core": ["../core/src/index.ts"]
+      "@saber/core": ["../core/src/model.ts"]
     }
   },
-  "include": ["src/**/*.ts", "../core/src/**/*.ts", "../ai/src/**/*.ts"]
+  "include": ["src", "vite.config.ts"]
 }

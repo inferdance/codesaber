@@ -1,5 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
+import fastifyStatic from "@fastify/static";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
 import { AgentServer, type AgentServerOptions } from "./manager.js";
@@ -49,8 +52,7 @@ export async function createSaberServer(opts: ServerOptions): Promise<SaberServe
     }
   });
 
-  app.get("/ws", { websocket: true }, (socket: WebSocket, request) => {
-    const origin = request.headers.origin;
+  app.get("/ws", { websocket: true }, (socket: WebSocket, request) => {    const origin = request.headers.origin;
     if (origin && !LOCAL_ORIGIN.test(origin)) {
       socket.close(1008, "origin not allowed");
       return;
@@ -111,6 +113,15 @@ export async function createSaberServer(opts: ServerOptions): Promise<SaberServe
       unsubs.clear();
     });
   });
+
+  // serve the built web UI when present (SABER_WEB_DIST overrides);
+  // without a build the server stays API-only. src/ and dist/ are both one
+  // level below packages/server, so two hops reach packages/web/dist.
+  const webDist = process.env.SABER_WEB_DIST
+    ?? fileURLToPath(new URL("../../web/dist", import.meta.url));
+  if (existsSync(webDist)) {
+    await app.register(fastifyStatic, { root: webDist });
+  }
 
   return {
     app,

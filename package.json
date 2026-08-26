@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && pnpm --filter @saber/web build",
     "test": "vitest run",
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
-    "lint": "tsc -b && tsc -p packages/core/tsconfig.tests.json && tsc -p packages/ai/tsconfig.tests.json && tsc -p packages/server/tsconfig.tests.json",
+    "lint": "tsc -b && tsc -p packages/core/tsconfig.tests.json && tsc -p packages/ai/tsconfig.tests.json && tsc -p packages/server/tsconfig.tests.json && tsc -p packages/web/tsconfig.json",
     "saber": "tsx packages/cli/src/main.ts"
   },
   "devDependencies": {
