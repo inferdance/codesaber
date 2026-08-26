@@ -30,7 +30,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("abort"),
     commandId: z.string().min(1).max(128),
     sessionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
-    turnId: z.string().min(1).max(64).optional(),
+    turnId: z.string().min(1).max(64),
   }),
 ]);
 

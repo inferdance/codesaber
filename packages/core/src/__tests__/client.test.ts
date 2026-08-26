@@ -64,7 +64,7 @@ describe("SaberClient lifecycle", () => {
 
     vi.advanceTimersByTime(120_000);
     expect(FakeSocket.created).toHaveLength(1); // nothing reconnected
-    expect(client.send({ type: "abort", commandId: "x", sessionId: "s" })).toBe(false);
+    expect(client.send({ type: "abort", commandId: "x", turnId: "t-1", sessionId: "s" })).toBe(false);
   });
 
   it("ignores callbacks from a replaced socket", () => {

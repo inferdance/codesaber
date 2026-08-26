@@ -40,7 +40,7 @@ export async function createSaberServer(opts: ServerOptions): Promise<SaberServe
 
   app.get("/api/health", async () => ({ ok: true, model: opts.model, cwd: opts.cwd }));
 
-  app.get("/api/sessions", async () => agent.listSessions());
+  app.get("/api/sessions", async () => agent.sessionSummaries());
 
   app.get("/api/sessions/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -104,8 +104,7 @@ export async function createSaberServer(opts: ServerOptions): Promise<SaberServe
           const ok = agent.abort(msg.sessionId, msg.turnId);
           send({ type: "ack", kind: "abort", commandId: msg.commandId, ok });
           break;
-        }
-      }
+        }      }
     });
 
     socket.on("close", () => {
@@ -114,13 +113,14 @@ export async function createSaberServer(opts: ServerOptions): Promise<SaberServe
     });
   });
 
-  // serve the built web UI when present (SABER_WEB_DIST overrides);
-  // without a build the server stays API-only. src/ and dist/ are both one
-  // level below packages/server, so two hops reach packages/web/dist.
-  const webDist = process.env.SABER_WEB_DIST
-    ?? fileURLToPath(new URL("../../web/dist", import.meta.url));
+  // serve the built web UI from the fixed build directory when present;
+  // dotfiles are denied and no env override exists — a static root must
+  // never be able to point at a workspace, repo, or home directory.
+  // src/ and dist/ are both one level below packages/server, so two hops
+  // reach packages/web/dist.
+  const webDist = fileURLToPath(new URL("../../web/dist", import.meta.url));
   if (existsSync(webDist)) {
-    await app.register(fastifyStatic, { root: webDist });
+    await app.register(fastifyStatic, { root: webDist, dotfiles: "deny" });
   }
 
   return {

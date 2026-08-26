@@ -46,7 +46,9 @@ export interface SaberClientOptions {
  */
 export class SaberClient {
   private ws: SaberSocketLike | null = null;
-  private lastSeq = 0;
+  /** Watermark PER SESSION — switching sessions must never let an old
+   *  session's high seq silence the next session' durable replay. */
+  private watermarks = new Map<string, number>();
   private reconnectDelay = 1000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = true;
@@ -56,6 +58,10 @@ export class SaberClient {
 
   constructor(private opts: SaberClientOptions) {
     this.sessionId = opts.sessionId;
+  }
+
+  private watermarkOf(sessionId: string): number {
+    return this.watermarks.get(sessionId) ?? 0;
   }
 
   connect(): void {
@@ -75,17 +81,17 @@ export class SaberClient {
     this.ws = null;
   }
 
-  /** Switches the subscription to another session; resets the watermark.
+  /** Switches the subscription to another session (watermarks are per
+   *  session, so returning to an earlier one resumes from its own mark).
    *  An empty id only unsubscribes (new-chat state before the first prompt). */
   setSession(sessionId: string): void {
     const previous = this.sessionId;
     if (sessionId === previous) return;
     this.sessionId = sessionId;
-    this.lastSeq = 0;
     const socket = this.ws;
     if (socket && socket.readyState === WebSocket.OPEN) {
       if (previous) socket.send(JSON.stringify({ type: "unsubscribe", sessionId: previous }));
-      if (sessionId) socket.send(JSON.stringify({ type: "subscribe", sessionId, since: 0 }));
+      if (sessionId) socket.send(JSON.stringify({ type: "subscribe", sessionId, since: this.watermarkOf(sessionId) }));
     }
   }
 
@@ -109,7 +115,7 @@ export class SaberClient {
       this.reconnectDelay = 1000;
       this.opts.onConnect?.();
       if (this.sessionId) {
-        socket.send(JSON.stringify({ type: "subscribe", sessionId: this.sessionId, since: this.lastSeq }));
+        socket.send(JSON.stringify({ type: "subscribe", sessionId: this.sessionId, since: this.watermarkOf(this.sessionId) }));
       }
     };
     socket.onmessage = (msg) => {
@@ -124,7 +130,11 @@ export class SaberClient {
           return;
         }
         const event = parsed as unknown as WireEvent;
-        if (typeof event.seq === "number" && event.seq > this.lastSeq) this.lastSeq = event.seq;
+        if (typeof event.seq === "number" && typeof event.sessionId === "string") {
+          if (event.seq > this.watermarkOf(event.sessionId)) {
+            this.watermarks.set(event.sessionId, event.seq);
+          }
+        }
         this.opts.onEvent(event);
       } catch { /* ignore malformed */ }
     };

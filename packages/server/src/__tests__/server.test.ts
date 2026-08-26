@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { createMockProvider, zeroUsage, type ProviderEvent } from "@saber/ai";
 import { createSaberServer } from "../index.js";
@@ -144,12 +145,41 @@ describe("server: WS round-trip with mock provider", () => {
     socket.send(JSON.stringify({ type: "prompt", commandId: "cmd-abort", text: "sleep" }));
     const ack = await once(messages, (m) => m.type === "ack" && m.kind === "prompt") as { sessionId: string };
 
+    const started = await once(messages, (m) => m.type === "turn_started") as { turnId?: string };
     await once(messages, (m) => m.type === "tool_started");
-    socket.send(JSON.stringify({ type: "abort", commandId: "cmd-abort-2", sessionId: ack.sessionId }));
+    socket.send(JSON.stringify({ type: "abort", commandId: "cmd-abort-2", sessionId: ack.sessionId, turnId: started.turnId }));
     await once(messages, (m) => m.type === "ack" && m.kind === "abort" && m.ok === true);
 
     const complete = await once(messages, (m) => m.type === "turn_complete", 10_000) as { reason?: string };
     expect(complete.reason).toBe("aborted");
+  });
+
+  it("rejects a stale abort aimed at a finished turn (turnId must match)", async () => {
+    const steps: ProviderEvent[][] = [
+      [{ type: "text_delta", text_delta: "quick" }, { type: "finish", reason: "stop", usage: zeroUsage() }],
+    ];
+    const server = await createSaberServer({
+      provider: createMockProvider("mock", steps),
+      model: "mock", cwd: workspace, dataDir,
+    });
+    cleanup.push(() => server.close());
+    const address = await server.listen();
+    const socket = await openSocket(`${address.replace("http", "ws")}/ws`);
+    const messages: Array<Record<string, unknown>> = [];
+    socket.on("message", (raw) => messages.push(JSON.parse(raw.toString())));
+
+    socket.send(JSON.stringify({ type: "prompt", commandId: "st-1", sessionId: "stale-abort", text: "hi" }));
+    const started = await once(messages, (m) => m.type === "turn_started") as { turnId?: string };
+    await once(messages, (m) => m.type === "turn_complete");
+
+    socket.send(JSON.stringify({ type: "abort", commandId: "st-2", sessionId: "stale-abort", turnId: started.turnId }));
+    const ack = await once(messages, (m) => m.type === "ack" && m.kind === "abort" && m.commandId === "st-2") as { ok?: boolean };
+    expect(ack.ok).toBe(false); // the turn it targeted is gone — no new turn was killed
+
+    // steer is likewise rejected on an idle session
+    socket.send(JSON.stringify({ type: "steer", commandId: "st-3", sessionId: "stale-abort", text: "late" }));
+    const steerAck = await once(messages, (m) => m.type === "ack" && m.kind === "steer") as { ok?: boolean };
+    expect(steerAck.ok).toBe(false);
   });
 
   it("rejects session ids that try to escape the sessions directory", async () => {
@@ -294,8 +324,9 @@ describe("server: WS round-trip with mock provider", () => {
     socket.on("message", (raw) => messages.push(JSON.parse(raw.toString())));
 
     socket.send(JSON.stringify({ type: "prompt", commandId: "p-1", sessionId: "poison-test", text: "sleep" }));
+    const started = await once(messages, (m) => m.type === "turn_started") as { turnId?: string };
     await once(messages, (m) => m.type === "tool_started");
-    socket.send(JSON.stringify({ type: "abort", commandId: "a-1", sessionId: "poison-test" }));
+    socket.send(JSON.stringify({ type: "abort", commandId: "a-1", sessionId: "poison-test", turnId: started.turnId }));
     const first = await once(messages, (m) => m.type === "turn_complete", 10_000) as { reason?: string };
     expect(first.reason).toBe("aborted");
 
@@ -348,12 +379,10 @@ describe("server: WS round-trip with mock provider", () => {
     client.disconnect();
   });
 
-  it("serves the built web UI when dist is present", async () => {
-    const { existsSync } = await import("node:fs");
-    const { fileURLToPath } = await import("node:url");
-    const webDist = fileURLToPath(new URL("../../../web/dist", import.meta.url));
-    if (!existsSync(webDist)) return; // fresh checkout: build runs after tests in CI
-
+  // CI builds before testing, so this normally runs; the visible skip only
+  // happens on a bare `pnpm test` against a fresh checkout without a build
+  const webDistPath = fileURLToPath(new URL("../../../web/dist", import.meta.url));
+  (existsSync(webDistPath) ? it : it.skip)("serves the built web UI (static index, API precedence, dotfiles denied)", async () => {
     const server = await createSaberServer({
       provider: createMockProvider("mock", [[{ type: "finish", reason: "stop", usage: zeroUsage() }]]),
       model: "mock", cwd: workspace, dataDir,
@@ -364,8 +393,10 @@ describe("server: WS round-trip with mock provider", () => {
     const index = await server.app.inject({ method: "GET", url: "/" });
     expect(index.statusCode).toBe(200);
     expect(index.body).toContain("<div id=\"root\">");
-    // API routes still take precedence over static
     const health = await server.app.inject({ method: "GET", url: "/api/health" });
     expect(health.json()).toMatchObject({ ok: true });
+    // dotfiles stay denied even though the static root serves the dist tree
+    const dotfile = await server.app.inject({ method: "GET", url: "/.gitignore" });
+    expect(dotfile.statusCode).toBe(403);
   });
 });

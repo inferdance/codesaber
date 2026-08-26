@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionProjection } from "@saber/core";
 import { useSaberSession } from "./useSaberSession.js";
 import { MessageList } from "./components/MessageList.js";
@@ -6,7 +6,8 @@ import { Composer } from "./components/Composer.js";
 
 interface SessionSummary {
   id: string;
-  projection: { messages: Array<{ role: string; content: string }>; isRunning: boolean };
+  title: string;
+  isRunning: boolean;
 }
 
 function Sidebar({ sessions, activeSession, onSelect, onNew }: {
@@ -25,10 +26,8 @@ function Sidebar({ sessions, activeSession, onSelect, onNew }: {
             className={`session${session.id === activeSession ? " active" : ""}`}
             onClick={() => onSelect(session.id)}
           >
-            {session.projection.isRunning ? <span className="running-dot" /> : null}
-            <span className="session-title">
-              {session.projection.messages.find((m) => m.role === "user")?.content.slice(0, 40) || session.id}
-            </span>
+            {session.isRunning ? <span className="running-dot" /> : null}
+            <span className="session-title">{session.title}</span>
           </button>
         ))}
       </div>
@@ -49,9 +48,16 @@ export default function App() {
 
   useEffect(() => {
     refreshSessions();
-    const timer = setInterval(refreshSessions, 10_000);
+    const timer = setInterval(refreshSessions, 30_000); // summaries only — cheap
     return () => clearInterval(timer);
   }, [refreshSessions]);
+
+  // refresh the sidebar right after a turn finishes
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !projection.isRunning) refreshSessions();
+    wasRunning.current = projection.isRunning;
+  }, [projection.isRunning, refreshSessions]);
 
   return (
     <div className="app">

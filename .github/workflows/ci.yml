@@ -22,8 +22,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
-      - run: pnpm test
       - run: pnpm build
+      - run: pnpm test
 
   smoke:
     name: real-model smoke (M0 DoD #3)

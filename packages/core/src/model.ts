@@ -20,7 +20,7 @@ export type WireEvent = { seq: number; sessionId: string } & SaberPayload;
 export type SaberCommand =
   | { type: "prompt"; commandId: string; text: string; sessionId?: string }
   | { type: "steer"; commandId: string; text: string; sessionId: string }
-  | { type: "abort"; commandId: string; turnId?: string; sessionId: string };
+  | { type: "abort"; commandId: string; turnId: string; sessionId: string };
 
 // ─── Projection (fold events → current state) ──────────────────────
 

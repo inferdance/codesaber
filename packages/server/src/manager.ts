@@ -73,7 +73,11 @@ export class AgentServer {
     fs.mkdirSync(this.sessionsDir, { recursive: true });
   }
 
-  listSessions(): Array<{ id: string; projection: SessionProjection }> {
+  /**
+   * Lightweight sidebar summaries: one pass per log, no projection payload.
+   * (Full projections stay on GET /api/sessions/:id.)
+   */
+  sessionSummaries(): Array<{ id: string; title: string; isRunning: boolean }> {
     return fs.readdirSync(this.sessionsDir)
       .filter((f) => f.endsWith(".jsonl"))
       .map((f) => f.slice(0, -".jsonl".length))
@@ -81,11 +85,26 @@ export class AgentServer {
       .sort()
       .reverse()
       .map((id) => {
+        let title = "";
+        let isRunning = false;
         try {
-          return { id, projection: this.projection(id) };
-        } catch {
-          return { id, projection: projectSession(id, []) };
-        }
+          for (const envelope of recoverSession(path.join(this.sessionsDir, `${id}.jsonl`)).events) {
+            const payload = envelope.payload;
+            if (title === "" && payload.type === "user_message") {
+              title = payload.message.blocks
+                .filter((b) => b.type === "text")
+                .map((b) => b.text)
+                .join("")
+                .slice(0, 80)
+                .trim();
+            } else if (payload.type === "turn_started") {
+              isRunning = true;
+            } else if (payload.type === "turn_complete") {
+              isRunning = false;
+            }
+          }
+        } catch { /* unreadable log: keep defaults */ }
+        return { id, title: title || id, isRunning };
       });
   }
 
@@ -128,9 +147,14 @@ export class AgentServer {
     return { sessionId, duplicate: false, started: true };
   }
 
+  /**
+   * Steers only the ACTIVE turn; on an idle handle there is nothing to steer
+   * into and the text would silently sit until an unrelated future prompt.
+   */
   steer(input: { sessionId: string; text: string; commandId: string }): boolean {
     const handle = this.handles.get(input.sessionId);
     if (!handle) return false;
+    if (!handle.draining || handle.current === null) return false;
     if (this.seenCommands.has(input.commandId)) return false;
     this.markCommand(input.commandId);
     handle.engine.steer(input.text);
@@ -139,13 +163,15 @@ export class AgentServer {
 
   /**
    * Aborts the active turn. A `turnId` (when provided) must match the active
-   * turn — a stale abort from a finished turn must never kill the next one.
+   * turn — a stale abort from a finished turn must never kill the next one —
+   * and an idle session has nothing to abort at all.
    */
   abort(sessionId: string, turnId?: string): boolean {
     const handle = this.handles.get(sessionId);
     if (!handle) return false;
+    if (handle.current === null) return false;
     if (turnId !== undefined && handle.state.activeTurnId !== turnId) return false;
-    handle.current?.abort();
+    handle.current.abort();
     return true;
   }
 

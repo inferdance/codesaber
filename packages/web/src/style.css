@@ -167,6 +167,7 @@ body {
 
 .composer textarea:focus { border-color: var(--accent); }
 .composer textarea:disabled { opacity: 0.5; }
+.composer textarea.send-error { border-color: var(--danger); }
 
 .composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 

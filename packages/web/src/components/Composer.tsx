@@ -4,21 +4,29 @@ import type { ConnectionStatus } from "../useSaberSession.js";
 interface ComposerProps {
   status: ConnectionStatus;
   isRunning: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string) => boolean;
   onAbort: () => void;
 }
 
 export function Composer({ status, isRunning, onSend, onAbort }: ComposerProps) {
   const [text, setText] = useState("");
+  const [sendError, setSendError] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const disabled = status !== "connected";
 
   const submit = (): void => {
     const value = text.trim();
     if (!value || disabled) return;
-    onSend(value);
-    setText("");
-    textareaRef.current?.focus();
+    const sent = onSend(value);
+    if (sent) {
+      setText("");
+      setSendError(false);
+      textareaRef.current?.focus();
+    } else {
+      // socket not open — keep the text so nothing is silently lost
+      setSendError(true);
+      setTimeout(() => setSendError(false), 2500);
+    }
   };
 
   // IME-safe: Enter during composition (Chinese input) must not submit
@@ -34,8 +42,11 @@ export function Composer({ status, isRunning, onSend, onAbort }: ComposerProps) 
       <textarea
         ref={textareaRef}
         value={text}
-        placeholder={disabled ? "connecting…" : isRunning ? "steering — Enter to inject into the running turn" : "Ask saber anything · Enter to send · Shift+Enter for newline"}
+        placeholder={sendError
+          ? "⚠ send failed — not connected; your text is kept, try again"
+          : disabled ? "connecting…" : isRunning ? "steering — Enter to inject into the running turn" : "Ask saber anything · Enter to send · Shift+Enter for newline"}
         disabled={disabled}
+        className={sendError ? "send-error" : undefined}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
         rows={3}
