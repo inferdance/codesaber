@@ -56,11 +56,9 @@ export function confineArgv(argv: string[], options: SeatbeltOptions): string[] 
  */
 export function confinementRefusal(requested: boolean, available: boolean): string | null {
   if (!requested) return null;
-  if (process.platform !== "darwin") {
-    return "SABER_SANDBOX=1 requires macOS (sandbox-exec); refusing to run unsandboxed";
-  }
   if (!available) {
-    return "SABER_SANDBOX=1 set but sandbox-exec is unavailable; refusing to run unsandboxed";
+    // availability already encodes platform (sandbox-exec is macOS-only)
+    return "SABER_SANDBOX=1 set but sandbox-exec confinement is unavailable on this host; refusing to run unsandboxed";
   }
   return null;
 }
