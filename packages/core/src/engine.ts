@@ -200,6 +200,7 @@ export class Engine {
 
       if (finishReason === "length") {
         this.dispatch({ type: "error", message: "truncated; refusing tool calls" });
+        this.refuseToolCalls(toolCalls, "model output truncated; calls refused");
         outcome = { kind: "length_refusal" };
         break;
       }
@@ -214,6 +215,7 @@ export class Engine {
       if (doomed >= 3) {
         const message = `doom-loop: ${firstCall.name} ×3`;
         this.dispatch({ type: "error", message });
+        this.refuseToolCalls(toolCalls, message);
         outcome = { kind: "doom_loop", message };
         break;
       }
@@ -329,6 +331,21 @@ export class Engine {
       results.push([executable[i].id, executable[i].name, result]);
     }
     return results;
+  }
+
+  /**
+   * Refusal paths (length/doom-loop) break BEFORE executing parsed calls;
+   * every tool_call in history must still meet a tool_result, or the next
+   * provider request carries an illegal unpaired sequence. Synthetic error
+   * results keep history AND the WAL paired.
+   */
+  private refuseToolCalls(calls: Array<{ id: string; name: string }>, reason: string): void {
+    const blocks: Block[] = [];
+    for (const call of calls) {
+      this.dispatch({ type: "tool_result", callId: call.id, name: call.name, content: `not executed (${reason})`, isError: true });
+      blocks.push({ type: "tool_result", call_id: call.id, content: `not executed (${reason})`, is_error: true });
+    }
+    if (blocks.length > 0) this.history.push({ role: "user", blocks });
   }
 
   private async executeBatch(calls: Array<{ name: string; arguments: unknown }>, signal?: AbortSignal): Promise<ToolResult[]> {

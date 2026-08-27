@@ -307,29 +307,33 @@ describe("M2 review fixes", () => {
 
   it("aborting the parent turn cancels a running task child", async () => {
     const zero = zeroUsage();
-    let childStarted = false;
-    let releaseChild!: () => void;
-    const gate = new Promise<void>((resolve) => { releaseChild = resolve; });
-    const scriptedParent: ProviderEvent[][] = [
-      [{ type: "tool_call_start", id: "t1", name: "task" },
-       { type: "tool_call_delta", id: "t1", arguments_delta: JSON.stringify({ prompt: "slow work" }) },
-       { type: "finish", reason: "tool_calls", usage: zero }],
-    ];
+    const parentScript: ProviderEvent[][] = [[
+      { type: "tool_call_start", id: "t1", name: "task" },
+      { type: "tool_call_delta", id: "t1", arguments_delta: JSON.stringify({ prompt: "slow work" }) },
+      { type: "finish", reason: "tool_calls", usage: zero },
+    ]];
     let parentCall = 0;
+    let childStarted = false;
     const provider: Provider = {
       name: "gated",
-      async *stream(): AsyncGenerator<ProviderEvent> {
-        // parent calls come from the parent engine; the child call gates
-        if (!childStarted && parentCall < scriptedParent.length) {
-          yield* scriptedParent[parentCall++];
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        if (!childStarted && parentCall < parentScript.length) {
+          yield* parentScript[parentCall++];
           return;
         }
         childStarted = true;
-        await gate;
+        // the gate opens ONLY on the parent abort reaching the child's
+        // request signal — if propagation breaks, this rejects and the
+        // timing assertion below fails
+        await new Promise<void>((resolve, reject) => {
+          const deadline = setTimeout(() => reject(new Error("child was never cancelled by parent abort")), 4000);
+          if (request.signal?.aborted) { clearTimeout(deadline); return resolve(); }
+          request.signal?.addEventListener("abort", () => { clearTimeout(deadline); resolve(); }, { once: true });
+        });
         yield { type: "finish", reason: "stop", usage: zero };
       },
     };
-    const session = SessionLog.create(path.join(dataDir, "sessions"), `taskabort-${Date.now()}`, {});
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `taskabort2-${Date.now()}`, {});
     const controller = new AbortController();
     const engine = new Engine({
       provider,
@@ -337,19 +341,78 @@ describe("M2 review fixes", () => {
       session, toolContext: ctx, model: "mock",
     });
     const turn = engine.runTurn({ userMessage: "go", signal: controller.signal });
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
       const started = Date.now();
       const tick = (): void => {
         if (childStarted) return resolve();
-        if (Date.now() - started > 5000) throw new Error("child never started");
+        if (Date.now() - started > 4500) return reject(new Error("child never started"));
         setTimeout(tick, 10);
       };
       tick();
     });
-    controller.abort(); // parent abort must reach the gated child
-    releaseChild();
+    const abortedAt = Date.now();
+    controller.abort();
     const { outcome } = await turn;
     expect(outcome.kind).toBe("aborted");
+    // falsifiable: without propagation the child would hang ~4s before its
+    // gate deadline rejects; with it, the turn settles near-instantly
+    expect(Date.now() - abortedAt).toBeLessThan(2_000);
+  });
+
+  it("refused tool calls stay paired — the next request keeps a legal sequence", async () => {
+    const zero = zeroUsage();
+    const scripted: ProviderEvent[][] = [
+      // turn 1: tool call that arrives truncated → length_refusal
+      [
+        { type: "tool_call_start", id: "c1", name: "read" },
+        { type: "tool_call_delta", id: "c1", arguments_delta: JSON.stringify({ path: "app.ts" }) },
+        { type: "finish", reason: "length", usage: zero },
+      ],
+      // turn 2: plain answer
+      [{ type: "text_delta", text_delta: "still alive" }, { type: "finish", reason: "stop", usage: zero }],
+    ];
+    let call = 0;
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    const provider: Provider = {
+      name: "rec",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        yield* (scripted[call++] ?? [{ type: "finish", reason: "stop", usage: zero }]);
+      },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `pairing-${Date.now()}`, {});
+    const engine = new Engine({ provider, tools: createTools(ctx), session, toolContext: ctx, model: "mock" });
+
+    const first = await engine.runTurn({ userMessage: "go" });
+    expect(first.outcome.kind).toBe("length_refusal");
+    const second = await engine.runTurn({ userMessage: "again" });
+    expect(second.outcome.kind).toBe("done");
+
+    // invariant: in the follow-up request every tool_call id has a
+    // tool_result in the immediately following user message
+    const messages = requests[1].messages;
+    const pending = new Set<string>();
+    for (const message of messages) {
+      for (const block of message.blocks) {
+        if (block.type === "tool_call") pending.add(block.id);
+        else if (block.type === "tool_result") {
+          expect(pending.delete(block.call_id)).toBe(true);
+        }
+      }
+      if (message.role === "user" && pending.size > 0 && message.blocks.some((b) => b.type === "text")) {
+        throw new Error("user text interleaved with unpaired tool calls");
+      }
+    }
+    expect(pending.size).toBe(0);
+
+    // WAL pairing holds too: the synthetic refusal result is durable
+    const log = recoverSession(session.path);
+    const results = log.events.filter((e) => e.payload.type === "tool_result");
+    expect(results).toHaveLength(1);
+    if (results[0].payload.type === "tool_result") {
+      expect(results[0].payload.content).toMatch(/not executed/);
+      expect(results[0].payload.isError).toBe(true);
+    }
   });
 
   it("compaction lands below the trigger threshold (no re-trigger churn)", async () => {

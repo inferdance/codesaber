@@ -338,8 +338,10 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
         try {
           const result = await runTask(args.prompt, { signal: tctx.signal });
           const ok = result.outcome === "done";
-          const content = result.answer.trim() || `task ended (${result.outcome})`;
-          return { content: ok ? truncateMiddle(content, 20_000) : content, isError: !ok };
+          // failure content is labeled with the outcome and BOTH paths are
+          // truncated — a failed child must not flood the parent context
+          const content = `${ok ? "" : `task ended (${result.outcome}): `}${result.answer.trim()}`;
+          return { content: truncateMiddle(content, 20_000), isError: !ok };
         } catch (e) {
           return { content: `task failed: ${errMsg(e)}`, isError: true };
         }
