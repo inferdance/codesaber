@@ -271,3 +271,111 @@ describe("task tool (subagent, depth 1)", () => {
     expect(childTools.find((t) => t.name === "task")).toBeUndefined();
   });
 });
+
+describe("M2 review fixes", () => {
+  it("a failed task outcome is surfaced as an error tool result", async () => {
+    const zero = zeroUsage();
+    const scripted: ProviderEvent[][] = [
+      [{ type: "tool_call_start", id: "t1", name: "task" },
+       { type: "tool_call_delta", id: "t1", arguments_delta: JSON.stringify({ prompt: "explode" }) },
+       { type: "finish", reason: "tool_calls", usage: zero }],
+      [{ type: "error", message: "HTTP 500", retryable: "fatal" }], // child fails (fatal: no retry)
+      [{ type: "text_delta", text_delta: "moving on" }, { type: "finish", reason: "stop", usage: zero }],
+    ];
+    let call = 0;
+    const provider: Provider = {
+      name: "scripted",
+      async *stream(): AsyncGenerator<ProviderEvent> {
+        // call 0 = parent (task call), call 1 = child (fails), call 2 = parent final
+        yield* (scripted[call++] ?? [{ type: "finish", reason: "stop", usage: zero }]);
+      },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `taskfail-${Date.now()}`, {});
+    const engine = new Engine({
+      provider,
+      tools: createTools(ctx, { runTask: createTaskRunner({ provider, model: "mock", cwd: workspace, dataDir }) }),
+      session, toolContext: ctx, model: "mock",
+    });
+    const { outcome } = await engine.runTurn({ userMessage: "go" });
+    expect(outcome.kind).toBe("done");
+    const log = recoverSession(session.path);
+    const taskResult = log.events.find((e) => e.payload.type === "tool_result" && e.payload.name === "task");
+    if (taskResult?.payload.type !== "tool_result") throw new Error("task result missing");
+    expect(taskResult.payload.isError).toBe(true);
+    expect(taskResult.payload.content).toMatch(/provider_failure/);
+  });
+
+  it("aborting the parent turn cancels a running task child", async () => {
+    const zero = zeroUsage();
+    let childStarted = false;
+    let releaseChild!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseChild = resolve; });
+    const scriptedParent: ProviderEvent[][] = [
+      [{ type: "tool_call_start", id: "t1", name: "task" },
+       { type: "tool_call_delta", id: "t1", arguments_delta: JSON.stringify({ prompt: "slow work" }) },
+       { type: "finish", reason: "tool_calls", usage: zero }],
+    ];
+    let parentCall = 0;
+    const provider: Provider = {
+      name: "gated",
+      async *stream(): AsyncGenerator<ProviderEvent> {
+        // parent calls come from the parent engine; the child call gates
+        if (!childStarted && parentCall < scriptedParent.length) {
+          yield* scriptedParent[parentCall++];
+          return;
+        }
+        childStarted = true;
+        await gate;
+        yield { type: "finish", reason: "stop", usage: zero };
+      },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `taskabort-${Date.now()}`, {});
+    const controller = new AbortController();
+    const engine = new Engine({
+      provider,
+      tools: createTools(ctx, { runTask: createTaskRunner({ provider, model: "mock", cwd: workspace, dataDir }) }),
+      session, toolContext: ctx, model: "mock",
+    });
+    const turn = engine.runTurn({ userMessage: "go", signal: controller.signal });
+    await new Promise<void>((resolve) => {
+      const started = Date.now();
+      const tick = (): void => {
+        if (childStarted) return resolve();
+        if (Date.now() - started > 5000) throw new Error("child never started");
+        setTimeout(tick, 10);
+      };
+      tick();
+    });
+    controller.abort(); // parent abort must reach the gated child
+    releaseChild();
+    const { outcome } = await turn;
+    expect(outcome.kind).toBe("aborted");
+  });
+
+  it("compaction lands below the trigger threshold (no re-trigger churn)", async () => {
+    const longAnswer = "answer ".repeat(200);
+    const zero = zeroUsage();
+    const responses: ProviderEvent[][] = [
+      [{ type: "text_delta", text_delta: longAnswer }, { type: "finish", reason: "stop", usage: zero }],
+      [{ type: "text_delta", text_delta: "SUMMARY" }, { type: "finish", reason: "stop", usage: zero }],
+      [{ type: "text_delta", text_delta: "second" }, { type: "finish", reason: "stop", usage: zero }],
+    ];
+    let call = 0;
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    const provider: Provider = {
+      name: "rec",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        yield* (responses[call++] ?? [{ type: "finish", reason: "stop", usage: zero }]);
+      },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `nochurn-${Date.now()}`, {});
+    const engine = new Engine({
+      provider, tools: [], session, toolContext: ctx, model: "mock",
+      compact: { thresholdTokens: 50 },
+    });
+    await engine.runTurn({ userMessage: "first" });           // turn + compact
+    await engine.runTurn({ userMessage: "second" });          // must NOT compact again
+    expect(requests).toHaveLength(3); // turn1, compact, turn2 — no second compact
+  });
+});

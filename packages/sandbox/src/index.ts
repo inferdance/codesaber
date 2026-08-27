@@ -40,9 +40,29 @@ export function buildSeatbeltProfile(options: SeatbeltOptions): string {
  * cannot confine (non-macOS or missing binary) so callers run unsandboxed
  * rather than broken.
  */
+export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+
 export function confineArgv(argv: string[], options: SeatbeltOptions): string[] | null {
   if (!seatbeltAvailable()) return null;
-  return ["sandbox-exec", "-p", buildSeatbeltProfile(options), ...argv];
+  // absolute path: a same-named shim earlier in PATH must not be able to
+  // drop the -p profile and run the command unconstrained
+  return [SANDBOX_EXEC, "-p", buildSeatbeltProfile(options), ...argv];
+}
+
+/**
+ * Fail-closed gate for explicit confinement requests: when the user asked
+ * for a sandbox the command must NOT silently run unsandboxed. Returns an
+ * error message when refused, null when confining can proceed.
+ */
+export function confinementRefusal(requested: boolean, available: boolean): string | null {
+  if (!requested) return null;
+  if (process.platform !== "darwin") {
+    return "SABER_SANDBOX=1 requires macOS (sandbox-exec); refusing to run unsandboxed";
+  }
+  if (!available) {
+    return "SABER_SANDBOX=1 set but sandbox-exec is unavailable; refusing to run unsandboxed";
+  }
+  return null;
 }
 
 /** Escapes a path for the SBPL string literal. */

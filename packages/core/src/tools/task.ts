@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { Provider } from "@saber/ai";
-import { Engine } from "../engine.js";
+import { Engine, type TurnOutcome } from "../engine.js";
 import { SessionLog } from "../session.js";
 import { createPathPolicy } from "../policy.js";
 import type { ToolContext } from "../types.js";
@@ -14,7 +14,17 @@ const TASK_SYSTEM =
 
 const TASK_TIMEOUT_MS = 300_000;
 
-export type TaskRunner = (prompt: string) => Promise<string>;
+export interface TaskResult {
+  answer: string;
+  outcome: TurnOutcome["kind"];
+}
+
+export interface TaskRunOptions {
+  /** Parent turn's abort signal — aborting the parent cancels the child. */
+  signal?: AbortSignal;
+}
+
+export type TaskRunner = (prompt: string, options?: TaskRunOptions) => Promise<TaskResult>;
 
 export interface TaskRunnerOptions {
   provider: Provider;
@@ -26,10 +36,11 @@ export interface TaskRunnerOptions {
 /**
  * Runs a prompt as a child agent: fresh context, its own WAL session log
  * (auditable under the sessions dir), the same toolset minus `task` itself —
- * subagents are depth-1 by construction, not by policy strings.
+ * subagents are depth-1 by construction, not by policy strings. The child
+ * aborts with the parent turn's signal OR its own 300s cap, whichever first.
  */
-export function createTaskRunner(opts: TaskRunnerOptions): (prompt: string) => Promise<string> {
-  return async (prompt: string): Promise<string> => {
+export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
+  return async (prompt: string, runOptions?: TaskRunOptions): Promise<TaskResult> => {
     const sessionId = `task-${randomUUID().slice(0, 8)}`;
     const sessionsDir = path.join(opts.dataDir, "sessions");
     const session = SessionLog.create(sessionsDir, sessionId, {
@@ -49,17 +60,23 @@ export function createTaskRunner(opts: TaskRunnerOptions): (prompt: string) => P
       toolContext: ctx,
       model: opts.model,
     });
+    const sources = [AbortSignal.timeout(TASK_TIMEOUT_MS)];
+    if (runOptions?.signal) sources.push(runOptions.signal);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TASK_TIMEOUT_MS);
+    const onAbort = (): void => controller.abort();
+    for (const source of sources) {
+      if (source.aborted) controller.abort();
+      else source.addEventListener("abort", onAbort, { once: true });
+    }
     try {
       const { answer, outcome } = await engine.runTurn({
         userMessage: prompt,
         system: TASK_SYSTEM,
         signal: controller.signal,
       });
-      return answer.trim() || `task ended (${outcome.kind})`;
+      return { answer, outcome: outcome.kind };
     } finally {
-      clearTimeout(timer);
+      for (const source of sources) source.removeEventListener("abort", onAbort);
       session.close();
     }
   };

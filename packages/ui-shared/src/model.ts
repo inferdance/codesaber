@@ -108,6 +108,9 @@ export function projectSession(sessionId: string, events: Array<{ seq: number } 
           content: `context compacted (${event.droppedEvents} messages → summary)`,
           timestamp: event.seq,
         });
+        projection.usage.inputTokens += event.usage?.input_tokens ?? 0;
+        projection.usage.outputTokens += event.usage?.output_tokens ?? 0;
+        projection.usage.costUsd += event.usage?.cost_usd ?? 0;
         break;
       case "turn_started":
         projection.isRunning = true;

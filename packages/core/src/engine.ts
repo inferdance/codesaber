@@ -230,7 +230,7 @@ export class Engine {
     }
 
     this.dispatch({ type: "turn_complete", turnId, reason: outcome.kind });
-    await this.maybeCompact();
+    if (outcome.kind === "done") await this.maybeCompact(); // never compact failed/aborted turns
     return { answer: lastText, outcome };
   }
 
@@ -246,7 +246,7 @@ export class Engine {
 
     const dropped = this.history.length;
     try {
-      const summary = await this.summarize();
+      const { summary, usage } = await this.summarize();
       // keep the latest exchange when it fits; shrink to the last user
       // message, then to the summary alone, until back under threshold
       const seed: Message = {
@@ -264,19 +264,24 @@ export class Engine {
       ];
       let kept: Message[] = [];
       for (const candidate of candidates) {
-        if (estimateTokens([seed, ...candidate]) <= threshold * 2) {
+        // candidates must land at or below the TRIGGER threshold, otherwise
+        // the next short message re-triggers compaction every turn
+        if (estimateTokens([seed, ...candidate]) <= threshold) {
           kept = candidate;
           break;
         }
       }
       this.history = [seed, ...kept];
-      this.dispatch({ type: "context_compacted", summary, droppedEvents: dropped });
+      this.usageTotal.input_tokens += usage.input_tokens;
+      this.usageTotal.output_tokens += usage.output_tokens;
+      this.usageTotal.cost_usd += usage.cost_usd;
+      this.dispatch({ type: "context_compacted", summary, droppedEvents: dropped, usage });
     } catch (e) {
       this.dispatch({ type: "error", message: `compaction failed (history kept): ${e instanceof Error ? e.message : String(e)}` });
     }
   }
 
-  private async summarize(): Promise<string> {
+  private async summarize(): Promise<{ summary: string; usage: Usage }> {
     const transcript = this.history
       .map((message) => message.blocks.map((b) => {
         if (b.type === "text") return b.text;
@@ -287,17 +292,20 @@ export class Engine {
       .join("\n---\n");
 
     let summary = "";
+    let usage: Usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0 };
     for await (const event of streamWithRetry(this.opts.provider, {
       model: this.opts.model,
       system: COMPACT_SYSTEM,
       messages: [{ role: "user", blocks: [{ type: "text", text: transcript }] }],
       tools: [],
+      signal: AbortSignal.timeout(120_000), // compaction must not hang the turn boundary
     })) {
       if (event.type === "text_delta") summary += event.text_delta;
+      if (event.type === "finish") usage = event.usage;
       if (event.type === "error") throw new Error(event.message);
     }
     if (!summary.trim()) throw new Error("compaction summary was empty");
-    return summary;
+    return { summary, usage };
   }
 
   /** WAL discipline: durable tool_call intent (fsync) before any side effect. */

@@ -3,7 +3,7 @@ import { execa } from "execa";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { checkRead, checkWrite } from "../policy.js";
-import { confineArgv, sandboxExecWorks } from "@saber/sandbox";
+import { confineArgv, confinementRefusal, sandboxExecWorks } from "@saber/sandbox";
 import type { ToolContext, ToolDefinition, ToolResult } from "../types.js";
 import { applyEdit } from "./edit.js";
 import { escapeRegExp, globToRegExp, hasRipgrep, walk, type RgEvent } from "./search.js";
@@ -52,6 +52,14 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
     "exclusive",
     async (args, tctx): Promise<ToolResult> => {
       const timeoutMs = args.timeout_ms ?? 120_000;
+      // fail-closed: an explicitly requested sandbox must never degrade
+      // into unsandboxed execution
+      const sandboxRequested = process.env.SABER_SANDBOX === "1";
+      const refusal = sandboxRequested
+        ? confinementRefusal(true, sandboxExecWorks())
+        : null;
+      if (refusal) return { content: refusal, isError: true };
+
       let timedOut = false;
       try {
         // detached → the command runs as its own process-group leader; on
@@ -59,9 +67,10 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
         // cannot survive (execa has no killDescendants option).
         // SABER_SANDBOX=1 additionally wraps the command in a macOS Seatbelt
         // profile: writes confined to cwd + dataDir, network denied.
-        const bashArgv = process.env.SABER_SANDBOX === "1" && sandboxExecWorks()
-          ? confineArgv(["bash", "-c", args.command], { writableRoots: [tctx.cwd, tctx.dataDir] }) ?? ["bash", "-c", args.command]
+        const bashArgv = sandboxRequested
+          ? confineArgv(["bash", "-c", args.command], { writableRoots: [tctx.cwd, tctx.dataDir] })
           : ["bash", "-c", args.command];
+        if (!bashArgv) return { content: "sandbox requested but confinement failed", isError: true };
         const subprocess = execa(bashArgv[0], bashArgv.slice(1), {
           cwd: tctx.cwd,
           env: {
@@ -325,9 +334,12 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
         prompt: z.string().min(1).describe("the complete, self-contained task for the subagent"),
       }),
       "exclusive",
-      async (args): Promise<ToolResult> => {
+      async (args, tctx): Promise<ToolResult> => {
         try {
-          return { content: truncateMiddle(await runTask(args.prompt), 20_000), isError: false };
+          const result = await runTask(args.prompt, { signal: tctx.signal });
+          const ok = result.outcome === "done";
+          const content = result.answer.trim() || `task ended (${result.outcome})`;
+          return { content: ok ? truncateMiddle(content, 20_000) : content, isError: !ok };
         } catch (e) {
           return { content: `task failed: ${errMsg(e)}`, isError: true };
         }

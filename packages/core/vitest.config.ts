@@ -5,6 +5,7 @@ export default defineConfig({
     alias: {
       "@saber/ai": fileURLToPath(new URL("../ai/src/index.ts", import.meta.url)),
       "@saber/ui-shared": fileURLToPath(new URL("../ui-shared/src/index.ts", import.meta.url)),
+      "@saber/sandbox": fileURLToPath(new URL("../sandbox/src/index.ts", import.meta.url)),
     },
   },
   test: { include: ["src/**/*.test.ts"] },

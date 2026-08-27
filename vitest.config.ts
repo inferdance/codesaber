@@ -10,6 +10,7 @@ export default defineConfig({
       "@saber/ui-shared/hook": fileURLToPath(new URL("./packages/ui-shared/src/hook.ts", import.meta.url)),
       "@saber/ui-shared": fileURLToPath(new URL("./packages/ui-shared/src/index.ts", import.meta.url)),
       "@saber/core": fileURLToPath(new URL("./packages/core/src/index.ts", import.meta.url)),
+      "@saber/sandbox": fileURLToPath(new URL("./packages/sandbox/src/index.ts", import.meta.url)),
     },
   },
 });
