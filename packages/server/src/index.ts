@@ -3,6 +3,8 @@ import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import * as path from "node:path";
 import type { WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
 import { AgentServer, type AgentServerOptions } from "./manager.js";
@@ -21,6 +23,16 @@ export interface SaberServer {
 }
 
 const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+
+function resolveWebDist(): string {
+  try {
+    const webPackage = createRequire(import.meta.url).resolve("@saber/web/package.json");
+    return path.join(path.dirname(webPackage), "dist");
+  } catch {
+    // dependency not linked (bare checkout without install) — monorepo sibling
+    return fileURLToPath(new URL("../../web/dist", import.meta.url));
+  }
+}
 
 /**
  * HTTP + WebSocket surface over AgentServer.
@@ -113,12 +125,12 @@ export async function createSaberServer(opts: ServerOptions): Promise<SaberServe
     });
   });
 
-  // serve the built web UI from the fixed build directory when present;
-  // dotfiles are denied and no env override exists — a static root must
-  // never be able to point at a workspace, repo, or home directory.
-  // src/ and dist/ are both one level below packages/server, so two hops
-  // reach packages/web/dist.
-  const webDist = fileURLToPath(new URL("../../web/dist", import.meta.url));
+  // serve the built web UI when present; dotfiles are denied and no env
+  // override exists — a static root must never be able to point at a
+  // workspace, repo, or home directory. Resolving through the package
+  // dependency works in BOTH layouts: monorepo (workspace symlink) and
+  // npm install (@saber/web as a real dependency of this package).
+  const webDist = resolveWebDist();
   if (existsSync(webDist)) {
     await app.register(fastifyStatic, { root: webDist, dotfiles: "deny" });
   }

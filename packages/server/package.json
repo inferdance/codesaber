@@ -7,6 +7,7 @@
     "@fastify/websocket": "^11.3.0",
     "@saber/ai": "workspace:*",
     "@saber/core": "workspace:*",
+    "@saber/web": "workspace:^",
     "fastify": "^5.12.1",
     "ws": "^8",
     "zod": "^3.24.0"

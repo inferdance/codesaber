@@ -3,6 +3,22 @@ import { projectSession, SaberClient, type SessionProjection, type WireEvent } f
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
+export interface UseSaberSessionOptions {
+  /** Test seam; defaults to the platform WebSocket. */
+  socketFactory?: ConstructorParameters<typeof SaberClient>[0]["socketFactory"];
+}
+
+// rAF when available (browser), 16ms timer elsewhere (jsdom tests, ink later)
+type Frame = number;
+const scheduleFrame = (cb: () => void): Frame =>
+  typeof requestAnimationFrame === "function"
+    ? requestAnimationFrame(cb)
+    : (setTimeout(cb, 16) as unknown as Frame);
+const cancelFrame = (frame: Frame): void => {
+  if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
+  else clearTimeout(frame as unknown as ReturnType<typeof setTimeout>);
+};
+
 interface PendingSteer {
   text: string;
   sessionId: string;
@@ -16,7 +32,7 @@ interface PendingSteer {
  * the active session's events with the shared core fold — same code as the
  * server.
  */
-export function useSaberSession(url: string): {
+export function useSaberSession(url: string, options?: UseSaberSessionOptions): {
   status: ConnectionStatus;
   projection: SessionProjection;
   activeSession: string;
@@ -34,10 +50,11 @@ export function useSaberSession(url: string): {
   const [version, setVersion] = useState(0);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [activeSession, setActiveSession] = useState("");
+  const socketFactory = options?.socketFactory;
 
   const scheduleRender = useCallback(() => {
     if (frameRef.current !== null) return;
-    frameRef.current = requestAnimationFrame(() => {
+    frameRef.current = scheduleFrame(() => {
       frameRef.current = null;
       setVersion((v) => v + 1);
     });
@@ -47,6 +64,7 @@ export function useSaberSession(url: string): {
     const client = new SaberClient({
       url,
       sessionId: "",
+      socketFactory,
       onConnect: () => setStatus("connected"),
       onDisconnect: () => setStatus("disconnected"),
       onAck: (ack) => {
@@ -78,12 +96,12 @@ export function useSaberSession(url: string): {
     clientRef.current = client;
     client.connect();
     return () => {
-      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      if (frameRef.current !== null) cancelFrame(frameRef.current);
       frameRef.current = null;
       client.disconnect();
       clientRef.current = null;
     };
-  }, [url, scheduleRender]);
+  }, [url, scheduleRender, socketFactory]);
 
   // version is the refold trigger; the events ref identity is stable by design
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,11 +143,11 @@ export function useSaberSession(url: string): {
     setActiveSession(sessionId);
   }, []);
 
+  /** Switches to a fresh unnamed session WITHOUT dropping other sessions'
+   *  cached events — returning to an old session must still show its full
+   *  history (the client resumes from its per-session watermark). */
   const newChat = useCallback(() => {
     clientRef.current?.setSession("");
-    eventsRef.current = [];
-    seqMapRef.current.clear();
-    pendingSteerRef.current.clear();
     setActiveSession("");
     setVersion((v) => v + 1);
   }, []);
