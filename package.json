@@ -7,7 +7,7 @@
     "build": "tsc -b && pnpm --filter @saber/web build",
     "test": "vitest run",
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
-    "lint": "tsc -b && tsc -p packages/core/tsconfig.tests.json && tsc -p packages/ai/tsconfig.tests.json && tsc -p packages/server/tsconfig.tests.json && tsc -p packages/web/tsconfig.json",
+    "lint": "tsc -b && tsc -p packages/core/tsconfig.tests.json && tsc -p packages/ai/tsconfig.tests.json && tsc -p packages/server/tsconfig.tests.json && tsc -p packages/web/tsconfig.json && tsc -p packages/tui/tsconfig.tests.json && tsc -p packages/sandbox/tsconfig.tests.json",
     "saber": "tsx packages/cli/src/main.ts"
   },
   "devDependencies": {

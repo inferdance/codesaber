@@ -3,7 +3,8 @@ export { SessionLog, recoverSession, type Recovered } from "./session.js";
 export { Engine, type TurnOutcome, type TurnInput, type EngineOptions } from "./engine.js";
 export type { ToolResult, ToolContext, ToolDefinition } from "./types.js";
 export { EPHEMERAL_EVENT_TYPES, type SaberPayload, type SaberEvent, type SessionEventEnvelope } from "./events.js";
-export { createTools, truncateMiddle } from "./tools/index.js";
+export { createTools, truncateMiddle, type ToolExtensions } from "./tools/index.js";
+export { createTaskRunner } from "./tools/task.js";
 export { applyEdit, type EditOutcome } from "./tools/edit.js";
 export { globToRegExp } from "./tools/search.js";
 export { zodToParameters, defineTool } from "./tools/schema.js";
@@ -13,12 +14,6 @@ export { zodToParameters, defineTool } from "./tools/schema.js";
  * model.ts so frontends can import it without pulling in Node-only code).
  */
 
-export {
-  type WireEvent, type SaberCommand,
-  type MessageView, type SessionProjection, projectSession,
-} from "./model.js";
-
-// ─── WebSocket Client (shared by Web and TUI) ──────────────────────
-
-export { SaberClient, type SaberClientOptions, type SaberAck, type SaberSocketLike } from "./client.js";
-export { useSaberSession, type ConnectionStatus, type UseSaberSessionOptions } from "./hook.js";
+// Frontend-facing data model (wire types, projection, WS client, React
+// session hook) lives in @saber/ui-shared — core stays UI-free and
+// React-free by design (see AGENTS.md).

@@ -346,7 +346,7 @@ describe("server: WS round-trip with mock provider", () => {
     expect(second.reason).toBe("done");
   });
 
-  it("SaberClient adopts the sessionId from a prompt ack and sees the full turn", async () => {    const { SaberClient } = await import("@saber/core");
+  it("SaberClient adopts the sessionId from a prompt ack and sees the full turn", async () => {    const { SaberClient } = await import("@saber/ui-shared");
     const steps: ProviderEvent[][] = [
       [{ type: "text_delta", text_delta: "hi from core client" }, { type: "finish", reason: "stop", usage: zeroUsage() }],
     ];
@@ -377,6 +377,66 @@ describe("server: WS round-trip with mock provider", () => {
     expect(client.sessionId).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
     expect(events.find((e) => e.type === "assistant_message")).toBeDefined();
     client.disconnect();
+  });
+
+  it("two clients converge on identical projections across a disconnect (cross-frontend sync)", async () => {
+    const steps: ProviderEvent[][] = [
+      [{ type: "text_delta", text_delta: "turn one" }, { type: "finish", reason: "stop", usage: zeroUsage() }],
+      [{ type: "text_delta", text_delta: "turn two" }, { type: "finish", reason: "stop", usage: zeroUsage() }],
+    ];
+    const server = await createSaberServer({
+      provider: createMockProvider("mock", steps),
+      model: "mock", cwd: workspace, dataDir,
+    });
+    cleanup.push(() => server.close());
+    const address = await server.listen();
+    const wsUrl = `${address.replace("http", "ws")}/ws`;
+
+    // client A starts the session and sees turn 1
+    const socketA1 = await openSocket(wsUrl);
+    const eventsA: Array<Record<string, unknown>> = [];
+    socketA1.on("message", (raw) => eventsA.push(JSON.parse(raw.toString())));
+    socketA1.send(JSON.stringify({ type: "prompt", commandId: "x-1", sessionId: "sync-test", text: "one" }));
+    await once(eventsA, (m) => m.type === "turn_complete");
+
+    // client B attaches afterwards and replays
+    const socketB = await openSocket(wsUrl);
+    const eventsB: Array<Record<string, unknown>> = [];
+    socketB.on("message", (raw) => eventsB.push(JSON.parse(raw.toString())));
+    socketB.send(JSON.stringify({ type: "subscribe", sessionId: "sync-test", since: 0 }));
+    await once(eventsB, (m) => m.type === "turn_complete");
+
+    // A drops; turn 2 happens without A
+    socketA1.close();
+    await new Promise((r) => setTimeout(r, 100));
+    socketB.send(JSON.stringify({ type: "prompt", commandId: "x-2", sessionId: "sync-test", text: "two" }));
+    await once(eventsB, (m) => (m as { type?: string }).type === "turn_complete" && eventsB.filter((e) => e.type === "turn_complete").length >= 2);
+
+    // A reconnects from its own watermark and catches up
+    const watermarkA = Math.max(...eventsA.filter((e) => typeof e.seq === "number").map((e) => e.seq as number));
+    const socketA2 = await openSocket(wsUrl);
+    socketA2.on("message", (raw) => eventsA.push(JSON.parse(raw.toString())));
+    socketA2.send(JSON.stringify({ type: "subscribe", sessionId: "sync-test", since: watermarkA }));
+    await new Promise<void>((resolve, reject) => {
+      const started = Date.now();
+      const tick = (): void => {
+        if (eventsA.filter((e) => e.type === "turn_complete").length >= 2) return resolve();
+        if (Date.now() - started > 5000) return reject(new Error("A never caught up"));
+        setTimeout(tick, 25);
+      };
+      tick();
+    });
+
+    // fold both event streams with the shared projection and compare
+    const { projectSession } = await import("@saber/ui-shared");
+    const wire = (list: Array<Record<string, unknown>>) =>
+      list.filter((e) => typeof e.seq === "number" && e.type !== "ack")
+        .map((e) => ({ seq: e.seq as number, ...(e as object) })) as Parameters<typeof projectSession>[1];
+    const projA = projectSession("sync-test", wire(eventsA));
+    const projB = projectSession("sync-test", wire(eventsB));
+    expect(projA.messages).toEqual(projB.messages);
+    expect(projA.usage).toEqual(projB.usage);
+    expect(projA.isRunning).toBe(projB.isRunning);
   });
 
   // CI builds before testing, so this normally runs; the visible skip only

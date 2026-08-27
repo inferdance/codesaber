@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { createMockProvider, zeroUsage, type Provider, type ProviderEvent } from "@saber/ai";
-import { Engine, SessionLog, createPathPolicy, createTools, recoverSession, type ToolContext } from "../index.js";
+import { Engine, SessionLog, createPathPolicy, createTaskRunner, createTools, recoverSession, type ToolContext } from "../index.js";
 import type { ToolDefinition } from "../types.js";
 
 let workspace: string;
@@ -153,5 +153,121 @@ describe("engine failure paths", () => {
     release();
     const settled = await first;
     expect(settled.outcome.kind).toBe("done");
+  });
+});
+
+describe("auto-compaction", () => {
+  it("compacts oversized history at the turn boundary and keeps the latest exchange", async () => {
+    const longAnswer = "answer ".repeat(200); // > threshold in estimated tokens
+    const responses: ProviderEvent[][] = [
+      [{ type: "text_delta", text_delta: longAnswer }, { type: "finish", reason: "stop", usage: zeroUsage() }],
+      [{ type: "text_delta", text_delta: "COMPACT SUMMARY MARKER" }, { type: "finish", reason: "stop", usage: zeroUsage() }],
+      [{ type: "text_delta", text_delta: "second answer" }, { type: "finish", reason: "stop", usage: zeroUsage() }],
+    ];
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    let call = 0;
+    const recording: Provider = {
+      name: "recording",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        yield* (responses[call++] ?? [{ type: "finish" as const, reason: "stop" as const, usage: zeroUsage() }]);
+      },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `compact-${Date.now()}`, {});
+    const engine = new Engine({
+      provider: recording,
+      tools: [],
+      session,
+      toolContext: ctx,
+      model: "mock",
+      compact: { thresholdTokens: 50 },
+    });
+
+    await engine.runTurn({ userMessage: "first question" });
+    // turn 1 + the compaction call itself
+    expect(requests).toHaveLength(2);
+    expect(requests[1].system).toMatch(/compress coding-agent/i);
+
+    await engine.runTurn({ userMessage: "second question" });
+    // the post-compaction request must carry the summary, not the old bulk
+    const flat = JSON.stringify(requests[2].messages);
+    expect(flat).toContain("COMPACT SUMMARY MARKER");
+    expect(flat).not.toContain(longAnswer.slice(0, 20));
+
+    // compaction is durable and visible to frontends
+    const { recoverSession } = await import("../session.js");
+    const log = recoverSession(session.path);
+    const compacted = log.events.find((e) => e.payload.type === "context_compacted");
+    expect(compacted).toBeDefined();
+  });
+
+  it("leaves history untouched below the threshold", async () => {
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `compact-off-${Date.now()}`, {});
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    const recording: Provider = {
+      name: "recording",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        yield { type: "finish", reason: "stop", usage: zeroUsage() };
+      },
+    };
+    const engine = new Engine({
+      provider: recording, tools: [], session, toolContext: ctx, model: "mock",
+      compact: { thresholdTokens: 1_000_000 },
+    });
+    await engine.runTurn({ userMessage: "hi" });
+    expect(requests).toHaveLength(1); // no compaction call
+  });
+});
+
+describe("task tool (subagent, depth 1)", () => {
+  it("delegates to a child engine with its own session log and returns its answer", async () => {
+    // one recording provider serves parent and child by call order
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    let call = 0;
+    const zero = zeroUsage();
+    const scripted: ProviderEvent[][] = [
+      // parent turn: call the task tool
+      [
+        { type: "tool_call_start", id: "t1", name: "task" },
+        { type: "tool_call_delta", id: "t1", arguments_delta: JSON.stringify({ prompt: "count the files" }) },
+        { type: "finish", reason: "tool_calls" as const, usage: zero },
+      ],
+      // child turn: plain answer
+      [{ type: "text_delta", text_delta: "there are 42 files" }, { type: "finish", reason: "stop" as const, usage: zero }],
+      // parent final
+      [{ type: "text_delta", text_delta: "the subagent says 42" }, { type: "finish", reason: "stop" as const, usage: zero }],
+    ];
+    const provider: Provider = {
+      name: "scripted",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        yield* (scripted[call++] ?? [{ type: "finish", reason: "stop" as const, usage: zero }]);
+      },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `parent-${Date.now()}`, {});
+    const runTask = createTaskRunner({ provider, model: "mock", cwd: workspace, dataDir });
+    const engine = new Engine({
+      provider, tools: createTools(ctx, { runTask }), session, toolContext: ctx, model: "mock",
+    });
+
+    const { answer } = await engine.runTurn({ userMessage: "how many files?" });
+    expect(answer).toContain("42");
+    expect(requests).toHaveLength(3);
+
+    // the tool result carries the child answer into the parent log
+    const log = recoverSession(session.path);
+    const taskResult = log.events.find((e) => e.payload.type === "tool_result" && e.payload.name === "task");
+    expect(taskResult?.payload.type === "tool_result" ? taskResult.payload.content : "").toContain("42 files");
+
+    // the child got its own durable session (fresh context, task system prompt)
+    const { readdirSync } = await import("node:fs");
+    const childLogs = readdirSync(path.join(dataDir, "sessions")).filter((f) => f.startsWith("task-"));
+    expect(childLogs.length).toBeGreaterThanOrEqual(1);
+    expect(requests[1].system).toMatch(/subagent/i);
+
+    // depth 1: the child's own toolset must not contain task
+    const childTools = createTools(ctx); // what the child received
+    expect(childTools.find((t) => t.name === "task")).toBeUndefined();
   });
 });

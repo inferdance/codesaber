@@ -9,8 +9,8 @@
     "types": ["vite/client"],
     "baseUrl": ".",
     "paths": {
-      "@saber/core/hook": ["../core/src/hook.ts"],
-      "@saber/core": ["../core/src/model.ts"]
+      "@saber/ui-shared/hook": ["../ui-shared/src/hook.ts"],
+      "@saber/ui-shared": ["../ui-shared/src/index.ts"]
     }
   },
   "include": ["src", "vite.config.ts"]

@@ -188,3 +188,12 @@ body {
 .status-connected { color: var(--ok); }
 .status-connecting { color: var(--warn); }
 .status-disconnected { color: var(--danger); }
+
+.msg.system {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  border: 1px dashed #2c3641;
+  border-radius: 999px;
+  padding: 2px 12px;
+}

@@ -60,19 +60,16 @@ importers:
       '@saber/ai':
         specifier: workspace:*
         version: link:../ai
+      '@saber/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       execa:
         specifier: ^9.0.0
         version: 9.6.1
-      react:
-        specifier: '>=18'
-        version: 18.3.1
       zod:
         specifier: ^3.24.0
         version: 3.25.76
     devDependencies:
-      '@types/react':
-        specifier: ^18
-        version: 18.3.31
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -80,7 +77,14 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.20.1)(jsdom@24.1.3)
 
-  packages/sandbox: {}
+  packages/sandbox:
+    devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@24.1.3)
 
   packages/server:
     dependencies:
@@ -96,6 +100,9 @@ importers:
       '@saber/core':
         specifier: workspace:*
         version: link:../core
+      '@saber/ui-shared':
+        specifier: workspace:*
+        version: link:../ui-shared
       '@saber/web':
         specifier: workspace:^
         version: link:../web
@@ -124,9 +131,9 @@ importers:
 
   packages/tui:
     dependencies:
-      '@saber/core':
+      '@saber/ui-shared':
         specifier: workspace:*
-        version: link:../core
+        version: link:../ui-shared
       ink:
         specifier: ^5.2.0
         version: 5.2.1(@types/react@18.3.31)(react@18.3.1)
@@ -143,12 +150,31 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@24.1.3)
 
-  packages/web:
+  packages/ui-shared:
     dependencies:
       '@saber/core':
         specifier: workspace:*
         version: link:../core
+      react:
+        specifier: '>=18'
+        version: 18.3.1
+    devDependencies:
+      '@types/react':
+        specifier: ^18.0.0
+        version: 18.3.31
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/web:
+    dependencies:
+      '@saber/ui-shared':
+        specifier: workspace:*
+        version: link:../ui-shared
       react:
         specifier: ^18.0.0
         version: 18.3.1

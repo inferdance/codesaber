@@ -2,10 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "baseUrl": ".",
-    "paths": {
-      "@saber/ui-shared": ["../ui-shared/src/index.ts"]
-    }
+    "jsx": "react-jsx",
+    "types": ["node", "vitest/globals"]
   },
   "include": ["src"]
 }

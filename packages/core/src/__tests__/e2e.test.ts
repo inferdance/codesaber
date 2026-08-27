@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { createMockProvider, zeroUsage, type ProviderEvent } from "@saber/ai";
-import { Engine, SessionLog, createPathPolicy, createTools, projectSession, recoverSession } from "../index.js";
+import { Engine, SessionLog, createPathPolicy, createTools, recoverSession } from "../index.js";
+import { projectSession } from "@saber/ui-shared";
 import type { ToolContext } from "../types.js";
 
 let workspace: string;

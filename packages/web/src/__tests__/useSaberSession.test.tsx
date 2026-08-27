@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import type { SaberSocketLike } from "@saber/core";
-import { useSaberSession } from "@saber/core/hook";
+import type { SaberSocketLike } from "@saber/ui-shared";
+import { useSaberSession } from "@saber/ui-shared/hook";
 
 class FakeSocket implements SaberSocketLike {
   readyState = 0;

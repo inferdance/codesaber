@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { MessageView } from "@saber/core";
+import type { MessageView } from "@saber/ui-shared";
 
 function UserCard({ message }: { message: MessageView }) {
   return (
@@ -37,6 +37,10 @@ function ErrorCard({ message }: { message: MessageView }) {
   return <div className="msg error">{message.content}</div>;
 }
 
+function SystemCard({ message }: { message: MessageView }) {
+  return <div className="msg system">{message.content}</div>;
+}
+
 export function MessageList({ messages }: { messages: MessageView[] }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -52,6 +56,7 @@ export function MessageList({ messages }: { messages: MessageView[] }) {
           case "assistant": return <AssistantCard key={key} message={message} />;
           case "tool": return <ToolCard key={key} message={message} />;
           case "error": return <ErrorCard key={key} message={message} />;
+          case "system": return <SystemCard key={key} message={message} />;
         }
       })}
       <div ref={bottomRef} />

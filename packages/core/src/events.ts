@@ -21,6 +21,8 @@ export type SaberPayload =
   | { type: "turn_complete"; turnId: string; reason: string }
   | { type: "step_started"; turnId: string; stepId: string }
   | { type: "step_finished"; turnId: string; stepId: string; usage: Usage }
+  // context management (durable)
+  | { type: "context_compacted"; summary: string; droppedEvents: number }
   // audit (durable)
   | { type: "error"; message: string }
   // streaming-only (ephemeral)

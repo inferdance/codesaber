@@ -20,7 +20,7 @@ A coding agent built from scratch — 0 to 1, exploring the ceiling of what an a
 |---|---|---|
 | M0 | core: engine loop, tools (bash/read/write/edit/grep/glob), path policy, WAL session, providers | ✅ done |
 | M1 | same engine, three frontends: web (Fastify+WS+React), TUI (ink), headless CLI | ✅ done |
-| M2 | frontier: auto-compact, subagents, code mode | exploring |
+| M2 | frontier: auto-compact ✅ · task subagents ✅ · Seatbelt sandbox ✅ · code mode (deferred) · Harbor adapter (deferred) | 🚧 |
 
 Design docs live in [`docs/superpowers/`](docs/superpowers/); deep research on codex/dsh/pi/kimi/opencode in [`docs/research/`](docs/research/).
 
@@ -53,6 +53,12 @@ pnpm saber server --port 3080    # web UI at http://127.0.0.1:3080
 pnpm saber tui                   # terminal UI against a running server
 pnpm saber exec -p "..."         # headless
 ```
+
+Frontend capabilities (M2): context auto-compaction at the turn boundary
+(`SABER_COMPACT_TOKENS`, default 100k est. tokens, 0 disables), `task` tool
+subagents (fresh context, own session log, depth-1), and optional macOS
+Seatbelt confinement for bash (`SABER_SANDBOX=1`: writes confined to cwd +
+data dir, network denied).
 
 ## Architecture
 

@@ -1,5 +1,5 @@
 import { useRef, useState, type KeyboardEvent } from "react";
-import type { ConnectionStatus } from "@saber/core/hook";
+import type { ConnectionStatus } from "@saber/ui-shared/hook";
 
 interface ComposerProps {
   status: ConnectionStatus;

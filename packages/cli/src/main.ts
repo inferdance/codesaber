@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Engine, SessionLog, createPathPolicy, createTools, type ToolContext } from "@saber/core";
+import { Engine, SessionLog, createPathPolicy, createTaskRunner, createTools, type ToolContext } from "@saber/core";
 import { buildProvider, getApiKey, getDataDir, systemPrompt, validatedBaseUrl, type Auth } from "./runtime.js";
 import * as path from "node:path";
 
@@ -61,16 +61,19 @@ async function runExec(args: string[]): Promise<void> {
     readFiles: new Map(),
   };
 
-  const tools = createTools(toolContext);
+  const runTask = createTaskRunner({ provider, model: resolvedModel, cwd, dataDir });
+  const tools = createTools(toolContext, { runTask });
 
   const controller = new AbortController();
   const timer = timeoutSec !== undefined ? setTimeout(() => controller.abort(), timeoutSec * 1000) : undefined;
   pipeClosed.abort = () => controller.abort();
 
+  const compactTokens = Number(process.env.SABER_COMPACT_TOKENS ?? "100000");
   const engine = new Engine({
     provider, tools, session, toolContext,
     model: resolvedModel,
     onEvent: jsonMode ? (e) => console.log(JSON.stringify(e)) : undefined,
+    ...(Number.isInteger(compactTokens) && compactTokens > 0 ? { compact: { thresholdTokens: compactTokens } } : {}),
   });
 
   let exitCode = 1;
@@ -161,7 +164,7 @@ switch (command) {
   case "server": runServer(args).catch((e) => { console.error(e); process.exit(1); }); break;
   case "tui": {
     const { runTui } = await import("@saber/tui");
-    runTui(args.slice(1));
+    runTui(args.slice(1)).catch((e) => { console.error(e); process.exit(1); });
     break;
   }
   case "doctor": runDoctor(); break;

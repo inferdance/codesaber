@@ -1,7 +1,14 @@
 {
   "name": "@saber/sandbox",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "macOS Seatbelt confinement for bash tool execution. Deferred to M2 (plan amendment 7): personal-use full-permission mode ships first."
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
 }

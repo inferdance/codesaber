@@ -4,7 +4,7 @@
  * client.js (platform WebSocket) — importing this file must never pull
  * engine/tools/session (Node-only) into a browser bundle.
  */
-import type { SaberPayload } from "./events.js";
+import type { SaberPayload } from "@saber/core";
 import { SaberClient } from "./client.js";
 export type { SaberClientOptions, SaberAck, SaberSocketLike } from "./client.js";
 export { SaberClient };
@@ -25,7 +25,7 @@ export type SaberCommand =
 // ─── Projection (fold events → current state) ──────────────────────
 
 export interface MessageView {
-  role: "user" | "assistant" | "tool" | "error";
+  role: "user" | "assistant" | "tool" | "error" | "system";
   content: string;
   toolName?: string;
   isError?: boolean;
@@ -101,6 +101,13 @@ export function projectSession(sessionId: string, events: Array<{ seq: number } 
       }
       case "error":
         projection.messages.push({ role: "error", content: event.message, timestamp: event.seq });
+        break;
+      case "context_compacted":
+        projection.messages.push({
+          role: "system",
+          content: `context compacted (${event.droppedEvents} messages → summary)`,
+          timestamp: event.seq,
+        });
         break;
       case "turn_started":
         projection.isRunning = true;

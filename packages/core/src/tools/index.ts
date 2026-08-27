@@ -3,12 +3,15 @@ import { execa } from "execa";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { checkRead, checkWrite } from "../policy.js";
+import { confineArgv, sandboxExecWorks } from "@saber/sandbox";
 import type { ToolContext, ToolDefinition, ToolResult } from "../types.js";
 import { applyEdit } from "./edit.js";
 import { escapeRegExp, globToRegExp, hasRipgrep, walk, type RgEvent } from "./search.js";
 import { defineTool } from "./schema.js";
+import type { TaskRunner } from "./task.js";
 
 export { applyEdit, type EditOutcome } from "./edit.js";
+export { createTaskRunner } from "./task.js";
 export { globToRegExp } from "./search.js";
 export { zodToParameters, defineTool } from "./schema.js";
 
@@ -22,7 +25,13 @@ export function truncateMiddle(text: string, max = 30_000): string {
   return `${text.slice(0, head)}\n… [truncated ${text.length - head - tail} chars of ${text.length}; read the file or narrow the command for the full output] …\n${text.slice(-tail)}`;
 }
 
-export function createTools(ctx: ToolContext): ToolDefinition[] {
+export interface ToolExtensions {
+  /** When present, a `task` tool is registered that delegates to a child
+   *  agent (fresh context, own session log, depth-1). */
+  runTask?: TaskRunner;
+}
+
+export function createTools(ctx: ToolContext, extensions?: ToolExtensions): ToolDefinition[] {
   const resolve = (p: string): string => path.resolve(ctx.cwd, p);
   const deny = (abs: string): boolean => checkRead(ctx.policy, abs) !== null;
   const display = (abs: string): string => {
@@ -48,7 +57,12 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
         // detached → the command runs as its own process-group leader; on
         // timeout (or turn abort) we SIGKILL the whole group so grandchildren
         // cannot survive (execa has no killDescendants option).
-        const subprocess = execa("bash", ["-c", args.command], {
+        // SABER_SANDBOX=1 additionally wraps the command in a macOS Seatbelt
+        // profile: writes confined to cwd + dataDir, network denied.
+        const bashArgv = process.env.SABER_SANDBOX === "1" && sandboxExecWorks()
+          ? confineArgv(["bash", "-c", args.command], { writableRoots: [tctx.cwd, tctx.dataDir] }) ?? ["bash", "-c", args.command]
+          : ["bash", "-c", args.command];
+        const subprocess = execa(bashArgv[0], bashArgv.slice(1), {
           cwd: tctx.cwd,
           env: {
             PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "",
@@ -298,5 +312,28 @@ export function createTools(ctx: ToolContext): ToolDefinition[] {
     },
   );
 
-  return [bash, read, write, edit, grep, glob];
+  const tools: ToolDefinition[] = [bash, read, write, edit, grep, glob];
+
+  if (extensions?.runTask) {
+    const runTask = extensions.runTask;
+    tools.push(defineTool(
+      "task",
+      "Delegates a self-contained task to a subagent with a fresh context (its own session log). " +
+      "Use it for exploration, multi-file search, or anything worth isolating from this conversation. " +
+      "Returns the subagent's final answer; subagents cannot spawn further subagents.",
+      z.object({
+        prompt: z.string().min(1).describe("the complete, self-contained task for the subagent"),
+      }),
+      "exclusive",
+      async (args): Promise<ToolResult> => {
+        try {
+          return { content: truncateMiddle(await runTask(args.prompt), 20_000), isError: false };
+        } catch (e) {
+          return { content: `task failed: ${errMsg(e)}`, isError: true };
+        }
+      },
+    ));
+  }
+
+  return tools;
 }

@@ -25,6 +25,25 @@ export type { SaberEvent };
 
 const MAX_STEPS = 64;
 
+/** Rough context estimate: ~4 chars per token across message text. */
+function estimateTokens(history: Message[]): number {
+  let chars = 0;
+  for (const message of history) {
+    for (const block of message.blocks) {
+      if (block.type === "text" || block.type === "thinking") chars += block.text.length;
+      else if (block.type === "tool_result") chars += block.content.length;
+      else if (block.type === "tool_call") chars += JSON.stringify(block.arguments).length + block.name.length;
+    }
+  }
+  return Math.ceil(chars / 4);
+}
+
+const COMPACT_SYSTEM =
+  "You compress coding-agent conversation history. Produce a dense summary that preserves: " +
+  "the user's goals and constraints, decisions made, files touched (with paths), tool findings " +
+  "worth remembering, verification results, and the current task state / next steps. " +
+  "Output only the summary.";
+
 export interface EngineOptions {
   provider: Provider;
   tools: ToolDefinition[];
@@ -32,6 +51,10 @@ export interface EngineOptions {
   toolContext: ToolContext;
   model: string;
   onEvent?: (event: SaberEvent) => void;
+  /** Auto-compaction: when the estimated history exceeds thresholdTokens
+   *  (chars/4 heuristic), a summarization call replaces old history at the
+   *  turn boundary. Omit to disable. */
+  compact?: { thresholdTokens: number };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -207,7 +230,74 @@ export class Engine {
     }
 
     this.dispatch({ type: "turn_complete", turnId, reason: outcome.kind });
+    await this.maybeCompact();
     return { answer: lastText, outcome };
+  }
+
+  /**
+   * Turn-boundary auto-compaction: summarize history through the provider
+   * and replace it with the summary plus the latest exchange. Failure keeps
+   * the original history (compaction must never lose a session).
+   */
+  private async maybeCompact(): Promise<void> {
+    const threshold = this.opts.compact?.thresholdTokens;
+    if (threshold === undefined) return;
+    if (estimateTokens(this.history) <= threshold) return;
+
+    const dropped = this.history.length;
+    try {
+      const summary = await this.summarize();
+      // keep the latest exchange when it fits; shrink to the last user
+      // message, then to the summary alone, until back under threshold
+      const seed: Message = {
+        role: "user",
+        blocks: [{
+          type: "text",
+          text: `[context resumed after compaction]\nEarlier conversation summary:\n${summary}\n\nLatest exchange follows.`,
+        }],
+      };
+      // (slice(-0) is the WHOLE array — hence explicit candidate list)
+      const candidates: Message[][] = [
+        this.history.slice(-2),
+        this.history.filter((m) => m.role === "user").slice(-1),
+        [],
+      ];
+      let kept: Message[] = [];
+      for (const candidate of candidates) {
+        if (estimateTokens([seed, ...candidate]) <= threshold * 2) {
+          kept = candidate;
+          break;
+        }
+      }
+      this.history = [seed, ...kept];
+      this.dispatch({ type: "context_compacted", summary, droppedEvents: dropped });
+    } catch (e) {
+      this.dispatch({ type: "error", message: `compaction failed (history kept): ${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+
+  private async summarize(): Promise<string> {
+    const transcript = this.history
+      .map((message) => message.blocks.map((b) => {
+        if (b.type === "text") return b.text;
+        if (b.type === "tool_call") return `[tool_call ${b.name} ${JSON.stringify(b.arguments)}]`;
+        if (b.type === "tool_result") return `[tool_result ${b.content}]`;
+        return "";
+      }).join("\n"))
+      .join("\n---\n");
+
+    let summary = "";
+    for await (const event of streamWithRetry(this.opts.provider, {
+      model: this.opts.model,
+      system: COMPACT_SYSTEM,
+      messages: [{ role: "user", blocks: [{ type: "text", text: transcript }] }],
+      tools: [],
+    })) {
+      if (event.type === "text_delta") summary += event.text_delta;
+      if (event.type === "error") throw new Error(event.message);
+    }
+    if (!summary.trim()) throw new Error("compaction summary was empty");
+    return summary;
   }
 
   /** WAL discipline: durable tool_call intent (fsync) before any side effect. */

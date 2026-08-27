@@ -1,22 +1,23 @@
 import React, { useEffect, useState } from "react";
 import { Box, Static, Text, useInput, useApp } from "ink";
 import TextInput from "ink-text-input";
-import { useSaberSession } from "@saber/core";
-import type { MessageView } from "@saber/core";
+import { useSaberSession } from "@saber/ui-shared/hook";
+import type { MessageView } from "@saber/ui-shared";
+import { sanitizeTerminalText } from "./sanitize.js";
 
 function MessageRow({ message }: { message: MessageView }) {
   switch (message.role) {
     case "user":
-      return <Text color="cyan">❯ {message.content}</Text>;
+      return <Text color="cyan">❯ {sanitizeTerminalText(message.content)}</Text>;
     case "assistant":
       return (
         <Box flexDirection="row">
-          <Text>{message.content}</Text>
+          <Text>{sanitizeTerminalText(message.content)}</Text>
           {message.streaming ? <Text color="blue"> ▍</Text> : null}
         </Box>
       );
     case "tool": {
-      const preview = message.content.split("\n").slice(0, 12).join("\n");
+      const preview = sanitizeTerminalText(message.content).split("\n").slice(0, 12).join("\n");
       return (
         <Box flexDirection="column">
           <Text color={message.isError ? "red" : "gray"}>
@@ -29,7 +30,9 @@ function MessageRow({ message }: { message: MessageView }) {
       );
     }
     case "error":
-      return <Text color="red">✕ {message.content}</Text>;
+      return <Text color="red">✕ {sanitizeTerminalText(message.content)}</Text>;
+    case "system":
+      return <Text dimColor>── {sanitizeTerminalText(message.content)} ──</Text>;
   }
 }
 
@@ -38,11 +41,12 @@ export function App({ wsUrl, sessionId }: { wsUrl: string; sessionId?: string })
   const { status, projection, activeSession, send, abort } = useSaberSession(wsUrl, { sessionId });
   const [input, setInput] = useState("");
 
-  useInput((_, key) => {
-    if (key.escape) {
-      if (projection.isRunning) abort();
-      else exit();
-    }
+  useInput((input_, key) => {
+    // Esc always DETACHES: the turn keeps running server-side so another
+    // frontend (browser) can take over the same session — never aborts it.
+    if (key.escape) exit();
+    // Ctrl+A aborts the active turn explicitly
+    if (key.ctrl && input_ === "a" && projection.isRunning) abort();
   });
 
   useEffect(() => {
@@ -69,7 +73,8 @@ export function App({ wsUrl, sessionId }: { wsUrl: string; sessionId?: string })
         <Text dimColor>
           {status === "connected" ? "●" : status === "connecting" ? "○" : "✕"} {status}
           {" · "}{activeSession || "new session"}
-          {projection.isRunning ? " · running (esc = abort)" : " · esc = quit"}
+          {projection.isRunning ? " · ctrl+a abort" : ""}
+          {" · esc detach"}
         </Text>
         <TextInput
           value={input}

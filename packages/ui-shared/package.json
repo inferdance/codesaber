@@ -1,0 +1,25 @@
+{
+  "name": "@saber/ui-shared",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./hook": { "types": "./dist/hook.d.ts", "default": "./dist/hook.js" }
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@saber/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "typescript": "^5.7.0"
+  }
+}

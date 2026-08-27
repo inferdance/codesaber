@@ -6,14 +6,13 @@ import {
   Engine,
   SessionLog,
   createPathPolicy,
+  createTaskRunner,
   createTools,
-  projectSession,
   recoverSession,
   type SaberEvent,
-  type SessionProjection,
   type ToolContext,
-  type WireEvent,
 } from "@saber/core";
+import { projectSession, type SessionProjection, type WireEvent } from "@saber/ui-shared";
 
 export interface AgentServerOptions {
   provider: Provider;
@@ -241,12 +240,20 @@ export class AgentServer {
       readFiles: new Map(),
     };
     const controllerState: { activeTurnId?: string } = {};
+    const compactTokens = Number(process.env.SABER_COMPACT_TOKENS ?? "100000");
+    const runTask = createTaskRunner({
+      provider: this.opts.provider,
+      model: this.opts.model,
+      cwd: this.opts.cwd,
+      dataDir: this.opts.dataDir,
+    });
     const engine = new Engine({
       provider: this.opts.provider,
-      tools: createTools(ctx),
+      tools: createTools(ctx, { runTask }),
       session,
       toolContext: ctx,
       model: this.opts.model,
+      ...(Number.isInteger(compactTokens) && compactTokens > 0 ? { compact: { thresholdTokens: compactTokens } } : {}),
       onEvent: (event) => {
         if (event.type === "turn_started") controllerState.activeTurnId = event.turnId;
         this.broadcast(sessionId, event);
