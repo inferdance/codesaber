@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionProjection } from "@saber/core";
-import { useSaberSession } from "./useSaberSession.js";
+import { useSaberSession } from "@saber/core/hook";
 import { MessageList } from "./components/MessageList.js";
 import { Composer } from "./components/Composer.js";
 

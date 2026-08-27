@@ -4,14 +4,26 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "scripts": { "build": "tsc", "test": "vitest run" },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
   "dependencies": {
     "@saber/ai": "workspace:*",
     "execa": "^9.0.0",
- "zod": "^3.24.0"
+    "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@types/react": "^18",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
   }
 }

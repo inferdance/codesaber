@@ -18,8 +18,8 @@ A coding agent built from scratch — 0 to 1, exploring the ceiling of what an a
 
 | Milestone | Scope | State |
 |---|---|---|
-| M0 | core: engine loop, tools (bash/read/write/edit/grep/glob), path policy, WAL session, providers | 🚧 active |
-| M1 | same engine, three frontends: web (Fastify+WS+React), TUI (ink), headless CLI | planned |
+| M0 | core: engine loop, tools (bash/read/write/edit/grep/glob), path policy, WAL session, providers | ✅ done |
+| M1 | same engine, three frontends: web (Fastify+WS+React), TUI (ink), headless CLI | ✅ done |
 | M2 | frontier: auto-compact, subagents, code mode | exploring |
 
 Design docs live in [`docs/superpowers/`](docs/superpowers/); deep research on codex/dsh/pi/kimi/opencode in [`docs/research/`](docs/research/).
@@ -44,6 +44,14 @@ Works with any Anthropic/OpenAI-compatible endpoint via `SABER_BASE_URL`
 export SABER_BASE_URL=https://open.bigmodel.cn/api/anthropic
 export SABER_ANTHROPIC_KEY=...
 pnpm saber exec -p "..." --model glm-5.3
+```
+
+Three frontends, one engine:
+
+```bash
+pnpm saber server --port 3080    # web UI at http://127.0.0.1:3080
+pnpm saber tui                   # terminal UI against a running server
+pnpm saber exec -p "..."         # headless
 ```
 
 ## Architecture

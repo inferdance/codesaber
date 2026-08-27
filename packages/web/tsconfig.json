@@ -9,6 +9,7 @@
     "types": ["vite/client"],
     "baseUrl": ".",
     "paths": {
+      "@saber/core/hook": ["../core/src/hook.ts"],
       "@saber/core": ["../core/src/model.ts"]
     }
   },

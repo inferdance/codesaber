@@ -148,6 +148,7 @@ function help(): void {
 USAGE:
   saber exec -p <prompt> [--json] [--model <model>] [--timeout <seconds>]
   saber server [--port <port>] [--model <model>]
+  saber tui [--http <url>] [--session <id>]
   saber doctor
   saber --version
 
@@ -158,6 +159,11 @@ EXIT CODES (exec):
 switch (command) {
   case "exec": runExec(args).catch((e) => { console.error(e); process.exit(1); }); break;
   case "server": runServer(args).catch((e) => { console.error(e); process.exit(1); }); break;
+  case "tui": {
+    const { runTui } = await import("@saber/tui");
+    runTui(args.slice(1));
+    break;
+  }
   case "doctor": runDoctor(); break;
   case "--version": console.log("saber 0.1.0"); break;
   default: help(); break;

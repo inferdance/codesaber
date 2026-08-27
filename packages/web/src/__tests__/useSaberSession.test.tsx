@@ -2,7 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { SaberSocketLike } from "@saber/core";
-import { useSaberSession } from "../useSaberSession.js";
+import { useSaberSession } from "@saber/core/hook";
 
 class FakeSocket implements SaberSocketLike {
   readyState = 0;

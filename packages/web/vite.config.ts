@@ -8,6 +8,7 @@ export default defineConfig({
     alias: {
       // browser-safe slice only — never the barrel (it pulls Node-only
       // engine/tools into the bundle via execa)
+      "@saber/core/hook": fileURLToPath(new URL("../core/src/hook.ts", import.meta.url)),
       "@saber/core": fileURLToPath(new URL("../core/src/model.ts", import.meta.url)),
     },
   },

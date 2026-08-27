@@ -2,11 +2,19 @@
   "name": "@saber/tui",
   "version": "0.1.0",
   "type": "module",
+  "main": "dist/main.js",
+  "types": "dist/main.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
   "dependencies": {
     "@saber/core": "workspace:*",
-    "@saber/ai": "workspace:*",
-    "ink": "^5.0.0",
+    "ink": "^5.2.0",
+    "ink-text-input": "^6.0.0",
     "react": "^18.0.0"
   },
-  "devDependencies": { "typescript": "^5.7.0" }
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "typescript": "^5.7.0"
+  }
 }

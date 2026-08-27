@@ -8,7 +8,8 @@
   "dependencies": {
     "@saber/ai": "workspace:*",
     "@saber/core": "workspace:*",
-    "@saber/server": "workspace:^"
+    "@saber/server": "workspace:^",
+    "@saber/tui": "workspace:^"
   },
   "devDependencies": {
     "tsx": "^4.0.0",

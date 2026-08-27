@@ -21,3 +21,4 @@ export {
 // ─── WebSocket Client (shared by Web and TUI) ──────────────────────
 
 export { SaberClient, type SaberClientOptions, type SaberAck, type SaberSocketLike } from "./client.js";
+export { useSaberSession, type ConnectionStatus, type UseSaberSessionOptions } from "./hook.js";

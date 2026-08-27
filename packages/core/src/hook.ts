@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { projectSession, SaberClient, type SessionProjection, type WireEvent } from "@saber/core";
+import { projectSession, SaberClient, type SessionProjection, type WireEvent } from "./model.js";
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
 export interface UseSaberSessionOptions {
   /** Test seam; defaults to the platform WebSocket. */
   socketFactory?: ConstructorParameters<typeof SaberClient>[0]["socketFactory"];
+  /** Resume a known session instead of starting a new unnamed one. */
+  sessionId?: string;
 }
 
 // rAF when available (browser), 16ms timer elsewhere (jsdom tests, ink later)
@@ -49,8 +51,9 @@ export function useSaberSession(url: string, options?: UseSaberSessionOptions): 
   const pendingSteerRef = useRef(new Map<string, PendingSteer>());
   const [version, setVersion] = useState(0);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
-  const [activeSession, setActiveSession] = useState("");
+  const [activeSession, setActiveSession] = useState(options?.sessionId ?? "");
   const socketFactory = options?.socketFactory;
+  const sessionId = options?.sessionId;
 
   const scheduleRender = useCallback(() => {
     if (frameRef.current !== null) return;
@@ -63,7 +66,7 @@ export function useSaberSession(url: string, options?: UseSaberSessionOptions): 
   useEffect(() => {
     const client = new SaberClient({
       url,
-      sessionId: "",
+      sessionId: sessionId ?? "",
       socketFactory,
       onConnect: () => setStatus("connected"),
       onDisconnect: () => setStatus("disconnected"),
@@ -101,7 +104,7 @@ export function useSaberSession(url: string, options?: UseSaberSessionOptions): 
       client.disconnect();
       clientRef.current = null;
     };
-  }, [url, scheduleRender, socketFactory]);
+  }, [url, scheduleRender, socketFactory, sessionId]);
 
   // version is the refold trigger; the events ref identity is stable by design
   // eslint-disable-next-line react-hooks/exhaustive-deps
