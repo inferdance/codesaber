@@ -182,3 +182,46 @@ describe("run_code", () => {
     expect(result.content).toMatch(/erasable TypeScript|enum/i);
   });
 });
+
+describe("run_code settlement (review round 2)", () => {
+  it("timeout overrides a staged success from the same run", async () => {
+    const started = Date.now();
+    const result = await run(`
+      void tools.bash({ command: "sleep 30", timeout_ms: 60000 });
+      return "ok";
+    `, 1000);
+    expect(result.isError).toBe(true); // cancelled, NOT success
+    expect(result.content).toMatch(/timed out/);
+    expect(Date.now() - started).toBeLessThan(15_000);
+  }, 20_000);
+
+  it("a WAL intent failure blocks the sub-tool and still settles", async () => {
+    const original = ctx.dispatch;
+    ctx.dispatch = (payload) => {
+      if (payload.type === "tool_call") throw new Error("fsync failed: disk full");
+    };
+    try {
+      const started = Date.now();
+      const result = await run(`
+        await tools.write({ path: "blocked.txt", content: "nope" });
+        return "should not matter";
+      `, 3000);
+      expect(result.isError).toBe(true);
+      expect(result.content).toMatch(/fsync failed|WAL|tool call failed/i);
+      expect(existsSync(path.join(workspace, "blocked.txt"))).toBe(false); // blocked
+      expect(Date.now() - started).toBeLessThan(8_000); // and it settled, no hang
+    } finally {
+      ctx.dispatch = original;
+    }
+  }, 15_000);
+
+  it("non-cooperative sub-tools cannot hang the run past the drain cap", async () => {
+    const { execSync } = await import("node:child_process");
+    const fifo = path.join(workspace, "fifo");
+    execSync(`mkfifo ${fifo}`);
+    const started = Date.now();
+    const result = await run(`await tools.read({ path: "fifo" }); return "stuck";`, 1000);
+    expect(result.isError).toBe(true);
+    expect(Date.now() - started).toBeLessThan(20_000); // ~1s timeout + 10s drain cap
+  }, 25_000);
+});

@@ -100,6 +100,10 @@ export interface RunCodeOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+/** Hard cap on waiting for in-flight sub-calls after an error terminal —
+ *  non-cooperative tools (e.g. a read stuck on a FIFO) must not hang the
+ *  turn forever; leftover intents surface via WAL recovery. */
+const DRAIN_CAP_MS = 10_000;
 
 interface Subcall {
   id: string;
@@ -164,26 +168,74 @@ export async function runCode(
     const subCtx: ToolContext = { ...ctx, signal: runSignal };
 
     const done = new Promise<ToolResult>((resolve) => {
-      const finish = (result: ToolResult): void => {
-        // never settle before every dispatched sub-call has landed
-        void queue.then(() => {
-          clearTimeout(timer);
-          runSignal.removeEventListener("abort", onAbort);
-          void worker.terminate();
-          resolve(result);
-        });
+      // ── single-terminal-state settlement ────────────────────────────
+      // pending counts ACCEPTED sub-calls; `closed` stops new acceptance
+      // (late worker messages get an error answer, never execution); an
+      // error terminal OVERRIDES a staged success; settlement fires once,
+      // only when closed && pending === 0 && a terminal exists. A hard
+      // drain cap guarantees settlement even with non-cooperative tools.
+      let pending = 0;
+      let closed = false;
+      let settledFlag = false;
+      let terminal: ToolResult | null = null;
+      let drainCap: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = (): void => {
+        if (drainCap !== null) clearTimeout(drainCap);
+        runSignal.removeEventListener("abort", onAbort);
+        void worker.terminate();
       };
-      const timer = setTimeout(() => {
-        finish({ content: `run_code timed out after ${timeoutMs}ms (worker terminated; in-flight sub-calls aborted)`, isError: true });
-      }, timeoutMs + 50); // belt-and-braces after the signal listener
+      const maybeSettle = (): void => {
+        if (settledFlag || !closed || terminal === null || pending > 0) return;
+        settledFlag = true;
+        cleanup();
+        resolve(terminal);
+      };
+      const closeWith = (result: ToolResult, isError: boolean): void => {
+        if (isError || terminal === null) terminal = result; // error overrides staged success
+        if (!closed) {
+          closed = true;
+          void worker.terminate(); // no further program output can arrive
+          // in-flight sub-calls get the signal; cap the wait for the rest
+          drainCap = setTimeout(() => {
+            if (!settledFlag) {
+              settledFlag = true;
+              cleanup();
+              resolve({
+                content: `run_code ended with sub-calls that never completed (drain deadline); ${terminal?.content ?? ""}`,
+                isError: true,
+              });
+            }
+          }, DRAIN_CAP_MS);
+        }
+        maybeSettle();
+      };
+      const accept = (fn: () => Promise<void>): boolean => {
+        if (closed) return false;
+        pending += 1;
+        void enqueue(async () => {
+          try {
+            await fn();
+          } finally {
+            pending -= 1;
+            maybeSettle();
+          }
+        });
+        return true;
+      };
+
       const onAbort = (): void => {
         const reason = timeoutSignal.aborted
           ? `run_code timed out after ${timeoutMs}ms (worker terminated; in-flight sub-calls aborted)`
           : "run_code aborted (worker terminated; in-flight sub-calls aborted)";
-        finish({ content: reason, isError: true });
+        closeWith({ content: reason, isError: true }, true);
       };
       if (runSignal.aborted) onAbort();
       else runSignal.addEventListener("abort", onAbort, { once: true });
+      // wall-clock backstop slightly after the signal (signal is primary)
+      setTimeout(() => {
+        if (timeoutSignal.aborted) onAbort();
+      }, timeoutMs + 50);
 
       worker.on("message", (msg: { type: string; value?: string; message?: string } & Subcall) => {
         if (msg.type === "ready") {
@@ -191,21 +243,28 @@ export async function runCode(
           return;
         }
         if (msg.type === "done") {
-          finish({ content: truncateMiddle(msg.value ?? "(no return value)", 20_000), isError: false });
+          closeWith({ content: truncateMiddle(msg.value ?? "(no return value)", 20_000), isError: false }, false);
           return;
         }
         if (msg.type === "error") {
-          finish({ content: truncateMiddle(msg.message ?? "unknown error", 20_000), isError: true });
+          closeWith({ content: truncateMiddle(msg.message ?? "unknown error", 20_000), isError: true }, true);
           return;
         }
         if (msg.type === "call") {
-          void enqueue(async () => {
+          const accepted = accept(async () => {
             const tool = tools.find((t) => t.name === msg.name) ?? null;
             if (!tool) {
               worker.postMessage({ type: "result", id: msg.id, isError: true, content: `unknown tool: ${msg.name}` });
               return;
             }
-            ctx.dispatch?.({ type: "tool_call", callId: msg.id, name: msg.name, args: msg.args }, { sync: true });
+            // WAL intent first; a failed intent write BLOCKS execution (the
+            // sub-call answers with an error instead of running the tool)
+            try {
+              ctx.dispatch?.({ type: "tool_call", callId: msg.id, name: msg.name, args: msg.args }, { sync: true });
+            } catch (e) {
+              worker.postMessage({ type: "result", id: msg.id, isError: true, content: `WAL intent failed, tool not executed: ${e instanceof Error ? e.message : String(e)}` });
+              return;
+            }
             let result: ToolResult;
             try {
               const args = (typeof msg.args === "object" && msg.args !== null ? msg.args : {}) as Record<string, unknown>;
@@ -216,11 +275,15 @@ export async function runCode(
             ctx.dispatch?.({ type: "tool_result", callId: msg.id, name: msg.name, content: result.content, isError: result.isError });
             worker.postMessage({ type: "result", id: msg.id, isError: result.isError, content: result.content, toolName: msg.name });
           });
+          if (!accepted) {
+            // run already ended — answer so the (soon-dead) worker isn't stuck
+            worker.postMessage({ type: "result", id: msg.id, isError: true, content: "run_code already ended; call not executed" });
+          }
         }
       });
 
       worker.on("error", (e) => {
-        finish({ content: `worker crashed: ${e.message}`, isError: true });
+        closeWith({ content: `worker crashed: ${e.message}`, isError: true }, true);
       });
     });
 
