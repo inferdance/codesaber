@@ -9,7 +9,6 @@ import { applyEdit } from "./edit.js";
 import { escapeRegExp, globToRegExp, hasRipgrep, walk, type RgEvent } from "./search.js";
 import { defineTool } from "./schema.js";
 import type { TaskRunner } from "./task.js";
-import { runCode } from "./code.js";
 
 export { applyEdit, type EditOutcome } from "./edit.js";
 export { createTaskRunner } from "./task.js";
@@ -350,23 +349,28 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
     ));
   }
 
-  if (process.env.SABER_CODE !== "0") {
+  // OPT-IN (SABER_CODE=1): the program runs with full Node capability —
+  // same trust as bash, NOT the PathPolicy-confined trust of native tools.
+  // The module is imported lazily so runtimes without node:module helpers
+  // (Bun dev) can still load the rest of the toolset.
+  if (process.env.SABER_CODE === "1") {
     tools.push(defineTool(
       "run_code",
-      "Runs a TypeScript program that orchestrates the other tools directly: " +
-      "`const content = await tools.read({ path: \"app.ts\" })`, then branch on it, loop, or " +
-      "Promise.all read-only calls — without round-tripping every result through the chat. " +
+      "Runs an erasable-TypeScript program (annotations/generics only — no enums/namespaces) " +
+      "that orchestrates the other tools directly: `const content = await tools.read({ path: \"app.ts\" })`, " +
+      "then branch, loop, or Promise.all read-only calls — without round-tripping every result through chat. " +
       "Top-level await allowed; no imports; END WITH `return <value>` — a bare final expression is NOT captured. " +
-      "Every tools.* call is validated, policy-checked, and logged exactly like a normal call. " +
-      "Containment only (same trust as bash). Tools: " +
-      "${bash,read,write,edit,grep,glob" + (extensions?.runTask ? ",task" : "") + "}.",
+      "Every tools.* call is validated, policy-checked, and logged exactly like a normal call; the program itself " +
+      "runs with the same trust as bash (full Node capability, not policy-confined). " +
+      "Tools: " + "${bash,read,write,edit,grep,glob" + (extensions?.runTask ? ",task" : "") + "}.",
       z.object({
-        code: z.string().min(1).describe("complete TypeScript program; use the `tools` binding"),
+        code: z.string().min(1).describe("complete erasable-TypeScript program; use the `tools` binding"),
         timeout_ms: z.number().int().min(1_000).max(300_000).optional().describe("default 120000"),
       }),
       "exclusive",
       async (args, tctx): Promise<ToolResult> => {
         if (tctx.signal?.aborted) return { content: "aborted before execution", isError: true };
+        const { runCode } = await import("./code.js");
         return runCode(
           { code: args.code, timeoutMs: args.timeout_ms },
           tools.filter((t) => t.name !== "run_code"),

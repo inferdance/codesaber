@@ -366,7 +366,12 @@ export class Engine {
           results[index] = { content: "aborted before execution", isError: true };
           return;
         }
-        results[index] = await tool.execute(isRecord(call.arguments) ? call.arguments : {}, this.opts.toolContext);
+        try {
+          results[index] = await tool.execute(isRecord(call.arguments) ? call.arguments : {}, this.opts.toolContext);
+        } catch (e) {
+          // last-resort boundary: a rejecting tool must never throw the turn
+          results[index] = { content: `tool crashed: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+        }
       };
       if (tool.concurrency === "read_only") inFlight.push(run());
       else exclusive.push(run);
