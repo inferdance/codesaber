@@ -262,6 +262,39 @@ describe("server: WS round-trip with mock provider", () => {
     expect(flat).toMatch(/result unknown/);
   });
 
+  it("already-subscribed clients receive the synthetic repair event", async () => {
+    const sessionsDir = path.join(dataDir, "sessions");
+    const crashed = SessionLog.create(sessionsDir, "crash-broadcast", {});
+    crashed.record({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "go" }] } });
+    crashed.record({ type: "assistant_message", message: { role: "assistant", blocks: [{ type: "tool_call", id: "c-b1", name: "bash", arguments: {} }] }, usage: zeroUsage() });
+    crashed.record({ type: "tool_call", callId: "c-b1", name: "bash", args: {} }, { sync: true });
+    crashed.close();
+
+    const provider: Provider = {
+      name: "plain",
+      async *stream(): AsyncGenerator<ProviderEvent> {
+        yield { type: "text_delta", text_delta: "ok" };
+        yield { type: "finish", reason: "stop", usage: zeroUsage() };
+      },
+    };
+    const server = await createSaberServer({ provider, model: "mock", cwd: workspace, dataDir });
+    cleanup.push(() => server.close());
+    const address = await server.listen();
+
+    // subscribe FIRST — the repair must reach an already-connected client
+    const watcher = await openSocket(`${address.replace("http", "ws")}/ws`);
+    const seen: Array<Record<string, unknown>> = [];
+    watcher.on("message", (raw) => seen.push(JSON.parse(raw.toString())));
+    watcher.send(JSON.stringify({ type: "subscribe", sessionId: "crash-broadcast", since: 0 }));
+    await once(seen, (m) => m.type === "tool_call"); // replay done
+
+    const socket = await openSocket(`${address.replace("http", "ws")}/ws`);
+    socket.send(JSON.stringify({ type: "prompt", commandId: "cb-1", sessionId: "crash-broadcast", text: "continue" }));
+
+    const repair = await once(seen, (m) => m.type === "tool_result" && m.callId === "c-b1") as { content?: string };
+    expect(String(repair.content)).toMatch(/result unknown/);
+  });
+
   it("rejects session ids that try to escape the sessions directory", async () => {
     const server = await createSaberServer({
       provider: createMockProvider("mock", [[{ type: "finish", reason: "stop", usage: zeroUsage() }]]),

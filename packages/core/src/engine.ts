@@ -57,13 +57,71 @@ export interface EngineOptions {
   compact?: { thresholdTokens: number };
 }
 
+function isValidBlock(block: unknown): boolean {
+  if (typeof block !== "object" || block === null) return false;
+  const b = block as Record<string, unknown>;
+  switch (b.type) {
+    case "text":
+    case "thinking":
+      return typeof b.text === "string";
+    case "tool_call":
+      return typeof b.id === "string" && typeof b.name === "string";
+    case "tool_result":
+      return typeof b.call_id === "string" && typeof b.content === "string";
+    case "image":
+      return typeof b.media_type === "string" && typeof b.data_base64 === "string";
+    default:
+      return false; // unknown block kinds are corrupt, not tolerated
+  }
+}
+
 function isValidMessage(v: unknown): v is Message {
   if (typeof v !== "object" || v === null) return false;
   const message = v as { role?: unknown; blocks?: unknown };
   if (message.role !== "user" && message.role !== "assistant") return false;
   if (!Array.isArray(message.blocks)) return false;
-  return message.blocks.every((block) =>
-    typeof block === "object" && block !== null && typeof (block as { type?: unknown }).type === "string");
+  return message.blocks.every(isValidBlock);
+}
+
+/**
+ * Legalizes a message list for provider requests: tool_results whose call
+ * never appears in a preceding assistant message are DROPPED (orphans from
+ * slicing, e.g. compaction keeping a result without its call); dangling
+ * tool_calls get synthetic error results. Idempotent.
+ */
+function sanitizeHistory(messages: Message[]): Message[] {
+  const pending = new Set<string>();
+  const kept: Message[] = [];
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const block of message.blocks) {
+        if (block.type === "tool_call") pending.add(block.id);
+      }
+      kept.push(message);
+      continue;
+    }
+    // user message: keep text/thinking as-is; tool_results only if paired
+    const blocks: typeof message.blocks = [];
+    let hasContent = false;
+    for (const block of message.blocks) {
+      if (block.type === "tool_result") {
+        if (!pending.delete(block.call_id)) continue; // orphan — drop
+        blocks.push(block);
+        hasContent = true;
+      } else {
+        blocks.push(block);
+        hasContent = true;
+      }
+    }
+    if (hasContent) kept.push({ ...message, blocks });
+  }
+  for (const callId of pending) {
+    kept.push({
+      role: "user",
+      blocks: [{ type: "tool_result", call_id: callId, content: "not executed (session ended before this call produced a result)", is_error: true }],
+    });
+  }
+  return kept;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -105,7 +163,7 @@ export class Engine {
       if (compaction.type !== "context_compacted") return bad("internal: compaction marker mismatch");
       // base (new logs) is restored verbatim; summary-only (old logs) degrades to the seed
       if (Array.isArray(compaction.base) && compaction.base.every(isValidMessage)) {
-        reconstructed.push(...compaction.base);
+        reconstructed.push(...sanitizeHistory(compaction.base.slice()));
       } else {
         reconstructed.push({
           role: "user",
@@ -151,7 +209,7 @@ export class Engine {
       });
     }
 
-    this.history = reconstructed;
+    this.history = sanitizeHistory(reconstructed);
     return { ok: true };
   }
 
@@ -355,7 +413,8 @@ export class Engine {
           break;
         }
       }
-      this.history = [seed, ...kept];
+      // slicing can orphan a kept tool_result from its call — legalize first
+      this.history = sanitizeHistory([seed, ...kept]);
       this.usageTotal.input_tokens += usage.input_tokens;
       this.usageTotal.output_tokens += usage.output_tokens;
       this.usageTotal.cost_usd += usage.cost_usd;

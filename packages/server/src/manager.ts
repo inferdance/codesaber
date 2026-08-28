@@ -267,37 +267,46 @@ export class AgentServer {
     // server restart onto an existing log: rebuild the model-visible history
     // so continuing the session actually continues the conversation
     if (fs.existsSync(file)) {
-      const recovered = recoverSession(file);
-      if (recovered.tornAt !== undefined) {
-        session.close();
-        throw new Error(`session ${sessionId} is corrupt at record ${recovered.tornAt}; refusing to continue`);
-      }
-      // WAL crash window: intent fsynced, result never landed. Side effects
-      // are NEVER re-executed; each unfinished call gets a persisted
-      // synthetic "result unknown" error so the session can continue and
-      // recovery stays idempotent on the next restart.
-      const finished = new Set(
-        recovered.events
-          .filter((e) => e.payload.type === "tool_result")
-          .map((e) => e.payload.type === "tool_result" ? e.payload.callId : ""),
-      );
-      for (const event of recovered.events) {
-        const payload = event.payload;
-        if (payload.type === "tool_call" && !finished.has(payload.callId)) {
-          session.record({
+      try {
+        const recovered = recoverSession(file);
+        if (recovered.tornAt !== undefined) {
+          throw new Error(`session ${sessionId} is corrupt at record ${recovered.tornAt}; refusing to continue`);
+        }
+        // WAL crash window: intent fsynced, result never landed. Side effects
+        // are NEVER re-executed; each unfinished call gets a persisted AND
+        // broadcast synthetic "result unknown" error so the session can
+        // continue, subscribers stay in sync, and recovery is idempotent.
+        // Pairing is FIFO by event order — a repeated callId must not let a
+        // stale result shadow a later unfinished intent.
+        const pendingCalls: Array<{ callId: string; name: string }> = [];
+        for (const event of recovered.events) {
+          const payload = event.payload;
+          if (payload.type === "tool_call") {
+            pendingCalls.push({ callId: payload.callId, name: payload.name });
+          } else if (payload.type === "tool_result") {
+            const index = pendingCalls.findIndex((c) => c.callId === payload.callId);
+            if (index >= 0) pendingCalls.splice(index, 1);
+          }
+        }
+        for (const call of pendingCalls) {
+          const event = session.record({
             type: "tool_result",
-            callId: payload.callId,
-            name: payload.name,
+            callId: call.callId,
+            name: call.name,
             content: "result unknown: the session ended before this call produced a result (not re-executed)",
             isError: true,
           }, { sync: true });
+          this.broadcast(sessionId, event); // already-subscribed clients must see the repair
         }
+        const refreshed = pendingCalls.length > 0 ? recoverSession(file).events : recovered.events;
+        const restored = engine.restoreHistory(refreshed.map((e) => e.payload));
+        if (!restored.ok) {
+          throw new Error(restored.error);
+        }
+      } catch (e) {
+        session.close(); // never leak the fd on a failed recovery
+        throw e;
       }
-      // the fold must see the synthetic results we just appended
-      const refreshed = recovered.unfinishedToolCalls.length > 0
-        ? recoverSession(file).events
-        : recovered.events;
-      engine.restoreHistory(refreshed.map((e) => e.payload));
     }
     this.handles.set(sessionId, handle);
     return handle;

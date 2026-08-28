@@ -570,3 +570,99 @@ describe("restoreHistory pairing + guards (review round)", () => {
     second.close();
   });
 });
+
+describe("restoreHistory hardening (review round 2)", () => {
+  it("compaction after a tool turn keeps a legal base (no orphan results)", async () => {
+    const zero = zeroUsage();
+    const responses: ProviderEvent[][] = [
+      // tool turn
+      [
+        { type: "tool_call_start", id: "tc-1", name: "read" },
+        { type: "tool_call_delta", id: "tc-1", arguments_delta: JSON.stringify({ path: "a.txt" }) },
+        { type: "finish", reason: "tool_calls", usage: zero },
+      ],
+      [{ type: "text_delta", text_delta: "tool answer" }, { type: "finish", reason: "stop", usage: zero }],
+      // compaction summary
+      [{ type: "text_delta", text_delta: "SUMMARY" }, { type: "finish", reason: "stop", usage: zero }],
+      [{ type: "text_delta", text_delta: "post-compact" }, { type: "finish", reason: "stop", usage: zero }],
+    ];
+    let call = 0;
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    const provider: Provider = {
+      name: "rec",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        yield* (responses[call++] ?? [{ type: "finish", reason: "stop", usage: zero }]);
+      },
+    };
+    const dir = path.join(dataDir, "sessions");
+    const first = SessionLog.create(dir, "compact-tool-turn", {});
+    const engineOne = new Engine({ provider, tools: createTools(ctx), session: first, toolContext: ctx, model: "mock", compact: { thresholdTokens: 1 } });
+    writeFileSync(path.join(workspace, "a.txt"), "content\n");
+    await engineOne.runTurn({ userMessage: "read it" }); // tool turn + compaction (threshold 1)
+    first.close();
+
+    // restart: restore must yield a legal sequence — no orphan tool_result
+    const second = SessionLog.open(dir, "compact-tool-turn");
+    const engineTwo = new Engine({ provider, tools: [], session: second, toolContext: ctx, model: "mock" });
+    const outcome = engineTwo.restoreHistory(recoverSession(second.path).events.map((e) => e.payload));
+    expect(outcome.ok).toBe(true);
+    const history = (engineTwo as unknown as { history: Message[] }).history;
+    const pending = new Set<string>();
+    for (const message of history) {
+      for (const block of message.blocks) {
+        if (block.type === "tool_call") pending.add(block.id);
+        else if (block.type === "tool_result") {
+          expect(pending.delete(block.call_id)).toBe(true); // paired, never orphan
+        }
+      }
+    }
+    second.close();
+  });
+
+  it("restart context equals live context exactly (deep compare)", async () => {
+    const longAnswer = "answer ".repeat(200);
+    const zero = zeroUsage();
+    const responses: ProviderEvent[][] = [
+      [{ type: "text_delta", text_delta: longAnswer }, { type: "finish", reason: "stop", usage: zero }],
+      [{ type: "text_delta", text_delta: "SUMMARY-TEXT" }, { type: "finish", reason: "stop", usage: zero }],
+      [{ type: "text_delta", text_delta: "live-second" }, { type: "finish", reason: "stop", usage: zero }],
+      [{ type: "text_delta", text_delta: "restored-second" }, { type: "finish", reason: "stop", usage: zero }],
+    ];
+    let call = 0;
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    const provider: Provider = {
+      name: "rec",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        yield* (responses[call++] ?? [{ type: "finish", reason: "stop", usage: zero }]);
+      },
+    };
+    const dir = path.join(dataDir, "sessions");
+    const first = SessionLog.create(dir, "exact-ctx", {});
+    const engineOne = new Engine({ provider, tools: [], session: first, toolContext: ctx, model: "mock", compact: { thresholdTokens: 50 } });
+    await engineOne.runTurn({ userMessage: "first question" }); // + compaction
+    await engineOne.runTurn({ userMessage: "live second" });    // requests[2] = live context + new turn
+    first.close();
+
+    const liveFinal = (engineOne as unknown as { history: Message[] }).history.slice();
+
+    const second = SessionLog.open(dir, "exact-ctx");
+    const engineTwo = new Engine({ provider, tools: [], session: second, toolContext: ctx, model: "mock" });
+    const restored = engineTwo.restoreHistory(recoverSession(second.path).events.map((e) => e.payload));
+    expect(restored.ok).toBe(true);
+    // the exact invariant: after restart, the model-visible history is
+    // byte-identical to what the live engine held when it exited
+    expect((engineTwo as unknown as { history: Message[] }).history).toEqual(liveFinal);
+    second.close();
+  });
+
+  it("rejects structurally-typed but field-invalid blocks", () => {
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `badblock-${Date.now()}`, {});
+    const engine = new Engine({ provider: createMockProvider("m", []), tools: [], session, toolContext: ctx, model: "m" });
+    const result = engine.restoreHistory([
+      { type: "user_message", message: { role: "user", blocks: [{ type: "text" } as unknown as { type: "text"; text: string }] } },
+    ]);
+    expect(result.ok).toBe(false);
+  });
+});
