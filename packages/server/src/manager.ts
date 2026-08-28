@@ -272,11 +272,32 @@ export class AgentServer {
         session.close();
         throw new Error(`session ${sessionId} is corrupt at record ${recovered.tornAt}; refusing to continue`);
       }
-      if (recovered.unfinishedToolCalls.length > 0) {
-        session.close();
-        throw new Error(`session ${sessionId} has ${recovered.unfinishedToolCalls.length} unfinished tool call(s); refusing to continue`);
+      // WAL crash window: intent fsynced, result never landed. Side effects
+      // are NEVER re-executed; each unfinished call gets a persisted
+      // synthetic "result unknown" error so the session can continue and
+      // recovery stays idempotent on the next restart.
+      const finished = new Set(
+        recovered.events
+          .filter((e) => e.payload.type === "tool_result")
+          .map((e) => e.payload.type === "tool_result" ? e.payload.callId : ""),
+      );
+      for (const event of recovered.events) {
+        const payload = event.payload;
+        if (payload.type === "tool_call" && !finished.has(payload.callId)) {
+          session.record({
+            type: "tool_result",
+            callId: payload.callId,
+            name: payload.name,
+            content: "result unknown: the session ended before this call produced a result (not re-executed)",
+            isError: true,
+          }, { sync: true });
+        }
       }
-      engine.restoreHistory(recovered.events.map((e) => e.payload));
+      // the fold must see the synthetic results we just appended
+      const refreshed = recovered.unfinishedToolCalls.length > 0
+        ? recoverSession(file).events
+        : recovered.events;
+      engine.restoreHistory(refreshed.map((e) => e.payload));
     }
     this.handles.set(sessionId, handle);
     return handle;

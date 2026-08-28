@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { SessionLog } from "@saber/core";
 import { createMockProvider, zeroUsage, type Provider, type ProviderEvent } from "@saber/ai";
 import { createSaberServer } from "../index.js";
 
@@ -214,6 +215,51 @@ describe("server: WS round-trip with mock provider", () => {
     const flat = JSON.stringify(requests[requests.length - 1].messages);
     expect(flat).toContain("kumquat");
     expect(flat).toContain("what word did I ask");
+  });
+
+  it("recovers a WAL crash window: unfinished call gets a synthetic result and the session continues", async () => {
+    const requests: Array<{ messages: unknown[] }> = [];
+    const makeProvider = (): Provider => ({
+      name: "recording",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request as { messages: unknown[] });
+        yield { type: "text_delta", text_delta: "ok" };
+        yield { type: "finish", reason: "stop", usage: zeroUsage() };
+      },
+    });
+    // craft the crash state directly: intent fsynced, no result
+    const sessionsDir = path.join(dataDir, "sessions");
+    const crashed = SessionLog.create(sessionsDir, "crash-window", {});
+    crashed.record({ type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "run something" }] } });
+    crashed.record({ type: "assistant_message", message: { role: "assistant", blocks: [{ type: "tool_call", id: "c-9", name: "bash", arguments: { command: "echo hi" } }] }, usage: zeroUsage() });
+    crashed.record({ type: "tool_call", callId: "c-9", name: "bash", args: { command: "echo hi" } }, { sync: true });
+    crashed.close();
+
+    const server = await createSaberServer({ provider: makeProvider(), model: "mock", cwd: workspace, dataDir });
+    cleanup.push(() => server.close());
+    const address = await server.listen();
+    const socket = await openSocket(`${address.replace("http", "ws")}/ws`);
+    const messages: Array<Record<string, unknown>> = [];
+    socket.on("message", (raw) => messages.push(JSON.parse(raw.toString())));
+    socket.send(JSON.stringify({ type: "prompt", commandId: "cw-1", sessionId: "crash-window", text: "continue anyway" }));
+
+    // the synthetic result is replayed to the client and the turn completes
+    const synthetic = await once(messages, (m) => m.type === "tool_result" && m.callId === "c-9") as { content?: string };
+    expect(String(synthetic.content)).toMatch(/result unknown.*not re-executed/);
+    let completes = 0;
+    await new Promise<void>((resolve, reject) => {
+      const started = Date.now();
+      const tick = (): void => {
+        if (messages.filter((m) => m.type === "turn_complete").length >= 1) return resolve();
+        if (Date.now() - started > 5000) return reject(new Error("turn never completed"));
+        setTimeout(tick, 25);
+      };
+      tick();
+    });
+    expect(completes).toBe(0); // unused; silence linter
+    // the model-visible request contains the synthetic paired result
+    const flat = JSON.stringify(requests[requests.length - 1].messages);
+    expect(flat).toMatch(/result unknown/);
   });
 
   it("rejects session ids that try to escape the sessions directory", async () => {

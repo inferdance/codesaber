@@ -22,7 +22,7 @@ export type SaberPayload =
   | { type: "step_started"; turnId: string; stepId: string }
   | { type: "step_finished"; turnId: string; stepId: string; usage: Usage }
   // context management (durable)
-  | { type: "context_compacted"; summary: string; droppedEvents: number; usage: Usage }
+  | { type: "context_compacted"; summary: string; droppedEvents: number; usage: Usage; base?: Message[] }
   // audit (durable)
   | { type: "error"; message: string }
   // streaming-only (ephemeral)

@@ -57,6 +57,15 @@ export interface EngineOptions {
   compact?: { thresholdTokens: number };
 }
 
+function isValidMessage(v: unknown): v is Message {
+  if (typeof v !== "object" || v === null) return false;
+  const message = v as { role?: unknown; blocks?: unknown };
+  if (message.role !== "user" && message.role !== "assistant") return false;
+  if (!Array.isArray(message.blocks)) return false;
+  return message.blocks.every((block) =>
+    typeof block === "object" && block !== null && typeof (block as { type?: unknown }).type === "string");
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -76,44 +85,72 @@ export class Engine {
 
   /**
    * Rebuilds model-visible history from a WAL replay — the payload union IS
-   * the model vocabulary, so reconstruction is a fold, not a parser. Events
-   * before the last `context_compacted` are dropped (the compaction summary
-   * message takes their place), matching live compaction semantics. Refusing
-   * on an unfinished tool_call keeps aborted turns from injecting dangling
-   * calls into a fresh provider request.
+   * the model vocabulary, so reconstruction is a fold, not a parser.
+   *
+   * Pairing is stateful: only tool_results whose callId matches a visible
+   * assistant tool_call enter the history (run_code sub-call audit events
+   * never do); dangling tool_calls (assistant persisted, result lost to a
+   * crash) get synthetic "not executed" results so the next provider
+   * request stays legal. Payloads are semantically validated — one corrupt
+   * record fails the restore explicitly instead of poisoning the session.
    */
   restoreHistory(events: SaberPayload[]): { ok: true } | { ok: false; error: string } {
+    const bad = (why: string): { ok: false; error: string } => ({ ok: false, error: `history restore refused: ${why}` });
+
     const lastCompaction = events.map((e, i) => (e.type === "context_compacted" ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
-    const relevant = events.slice(lastCompaction + 1);
 
     const reconstructed: Message[] = [];
-    for (const payload of relevant) {
+    if (lastCompaction >= 0) {
+      const compaction = events[lastCompaction];
+      if (compaction.type !== "context_compacted") return bad("internal: compaction marker mismatch");
+      // base (new logs) is restored verbatim; summary-only (old logs) degrades to the seed
+      if (Array.isArray(compaction.base) && compaction.base.every(isValidMessage)) {
+        reconstructed.push(...compaction.base);
+      } else {
+        reconstructed.push({
+          role: "user",
+          blocks: [{ type: "text", text: `[context resumed after compaction]\nEarlier conversation summary:\n${compaction.summary}\n\nReplayed exchange follows.` }],
+        });
+      }
+    }
+
+    const pendingCalls = new Set<string>();
+    for (const payload of events.slice(lastCompaction + 1)) {
       switch (payload.type) {
         case "user_message":
-        case "assistant_message":
+        case "assistant_message": {
+          if (!isValidMessage(payload.message)) return bad(`${payload.type} payload has invalid message`);
           reconstructed.push(payload.message);
+          if (payload.type === "assistant_message") {
+            for (const block of payload.message.blocks) {
+              if (block.type === "tool_call") pendingCalls.add(block.id);
+            }
+          }
           break;
-        case "tool_result":
+        }
+        case "tool_result": {
+          if (!pendingCalls.has(payload.callId)) continue; // audit-only (run_code inner calls) — not model-visible
+          pendingCalls.delete(payload.callId);
           reconstructed.push({
             role: "user",
             blocks: [{ type: "tool_result", call_id: payload.callId, content: payload.content, is_error: payload.isError }],
           });
           break;
+        }
         default:
           break; // lifecycle/audit events are not model-visible
       }
     }
 
-    if (lastCompaction >= 0) {
-      const summary = events[lastCompaction].type === "context_compacted" ? events[lastCompaction].summary : "";
-      reconstructed.unshift({
+    // dangling calls (crash between the assistant message and its result)
+    // are paired with synthetic errors — never silently dropped
+    for (const callId of pendingCalls) {
+      reconstructed.push({
         role: "user",
-        blocks: [{ type: "text", text: `[context resumed after compaction]\nEarlier conversation summary:\n${summary}\n\nReplayed exchange follows.` }],
+        blocks: [{ type: "tool_result", call_id: callId, content: "not executed (session ended before this call produced a result)", is_error: true }],
       });
     }
 
-    // dangling tool_result without its assistant tool_call → drop; dangling
-    // detection for tool_call lives in the WAL recovery the caller ran
     this.history = reconstructed;
     return { ok: true };
   }
@@ -322,7 +359,9 @@ export class Engine {
       this.usageTotal.input_tokens += usage.input_tokens;
       this.usageTotal.output_tokens += usage.output_tokens;
       this.usageTotal.cost_usd += usage.cost_usd;
-      this.dispatch({ type: "context_compacted", summary, droppedEvents: dropped, usage });
+      // `base` is the exact post-compaction model history: restarts restore
+      // it verbatim instead of re-deriving (and losing) the kept messages
+      this.dispatch({ type: "context_compacted", summary, droppedEvents: dropped, usage, base: this.history });
     } catch (e) {
       this.dispatch({ type: "error", message: `compaction failed (history kept): ${e instanceof Error ? e.message : String(e)}` });
     }

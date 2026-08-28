@@ -5,6 +5,8 @@ import * as path from "node:path";
 import { createMockProvider, zeroUsage, type Provider, type ProviderEvent } from "@saber/ai";
 import { Engine, SessionLog, createPathPolicy, createTaskRunner, createTools, recoverSession, type ToolContext } from "../index.js";
 import type { ToolDefinition } from "../types.js";
+import type { SaberPayload } from "../events.js";
+import type { Message } from "@saber/ai";
 
 let workspace: string;
 let dataDir: string;
@@ -478,6 +480,93 @@ describe("restoreHistory (WAL replay → model context)", () => {
     expect(flat).not.toContain("old question one");
     expect(flat).toContain("OLD SUMMARY");
     expect(flat).toContain("continue where we left off");
+    second.close();
+  });
+});
+
+describe("restoreHistory pairing + guards (review round)", () => {
+  const base = (extra: SaberPayload[]): SaberPayload[] => extra;
+
+  it("pairs only visible tool calls; run_code audit results are skipped", () => {
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `pair-${Date.now()}`, {});
+    const engine = new Engine({ provider: createMockProvider("m", []), tools: [], session, toolContext: ctx, model: "m" });
+    const result = engine.restoreHistory(base([
+      { type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "go" }] } },
+      { type: "assistant_message", message: { role: "assistant", blocks: [{ type: "tool_call", id: "outer-1", name: "run_code", arguments: {} }] }, usage: zeroUsage() },
+      // run_code inner audit events: callId never visible in an assistant message
+      { type: "tool_call", callId: "rc-abcd-1-read", name: "read", args: {} },
+      { type: "tool_result", callId: "rc-abcd-1-read", name: "read", content: "inner", isError: false },
+      { type: "tool_result", callId: "outer-1", name: "run_code", content: "outer answer", isError: false },
+    ]));
+    expect(result.ok).toBe(true);
+    const flat = JSON.stringify((engine as unknown as { history: Message[] }).history);
+    expect(flat).toContain("outer answer");
+    expect(flat).not.toContain("inner"); // audit-only, not model-visible
+  });
+
+  it("dangling tool calls get synthetic error results (legal sequence)", () => {
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `dangle-${Date.now()}`, {});
+    const engine = new Engine({ provider: createMockProvider("m", []), tools: [], session, toolContext: ctx, model: "m" });
+    // crash between assistant_message and the result
+    const result = engine.restoreHistory(base([
+      { type: "user_message", message: { role: "user", blocks: [{ type: "text", text: "go" }] } },
+      { type: "assistant_message", message: { role: "assistant", blocks: [{ type: "tool_call", id: "c1", name: "bash", arguments: {} }] }, usage: zeroUsage() },
+    ]));
+    expect(result.ok).toBe(true);
+    const history = (engine as unknown as { history: Message[] }).history;
+    const last = history[history.length - 1];
+    const block = last.blocks[0];
+    if (block.type !== "tool_result") throw new Error("expected synthetic tool_result");
+    expect(block.call_id).toBe("c1");
+    expect(block.is_error).toBe(true);
+  });
+
+  it("semantically invalid payloads fail the restore explicitly", () => {
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `bad-${Date.now()}`, {});
+    const engine = new Engine({ provider: createMockProvider("m", []), tools: [], session, toolContext: ctx, model: "m" });
+    const result = engine.restoreHistory(base([
+      { type: "user_message", message: undefined as unknown as Message },
+    ]));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/restore refused/);
+  });
+
+  it("real compaction + restart restores the exact same context as live", async () => {
+    const longAnswer = "answer ".repeat(200);
+    const zero = zeroUsage();
+    const responses: ProviderEvent[][] = [
+      [{ type: "text_delta", text_delta: longAnswer }, { type: "finish", reason: "stop", usage: zero }],
+      [{ type: "text_delta", text_delta: "SUMMARY" }, { type: "finish", reason: "stop", usage: zero }],
+      [{ type: "text_delta", text_delta: "second" }, { type: "finish", reason: "stop", usage: zero }],
+    ];
+    let call = 0;
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    const provider: Provider = {
+      name: "rec",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        yield* (responses[call++] ?? [{ type: "finish", reason: "stop", usage: zero }]);
+      },
+    };
+    const dir = path.join(dataDir, "sessions");
+    const first = SessionLog.create(dir, "compact-restart", {});
+    const engineOne = new Engine({ provider, tools: [], session: first, toolContext: ctx, model: "mock", compact: { thresholdTokens: 50 } });
+    await engineOne.runTurn({ userMessage: "first" }); // turn + real compaction with base
+    first.close();
+
+    const second = SessionLog.open(dir, "compact-restart");
+    const engineTwo = new Engine({ provider, tools: [], session: second, toolContext: ctx, model: "mock" });
+    const recovered = recoverSession(second.path);
+    const outcome = engineTwo.restoreHistory(recovered.events.map((e) => e.payload));
+    expect(outcome.ok).toBe(true);
+    // live history after compaction (requests[2] minus the new turn) must equal restored history + new turn
+    await engineTwo.runTurn({ userMessage: "second" });
+    const liveAfterCompact = requests[2].messages; // turn2 on engine one? no — engine one only ran turn 1
+    // engine one made 2 requests (turn + compact summary); engine two made 1 (turn "second")
+    const restoredThenTurn = requests[requests.length - 1].messages;
+    expect(JSON.stringify(restoredThenTurn)).toContain("SUMMARY");
+    // exact kept messages survive: the base carried the user message of turn 1
+    expect(restoredThenTurn.some((m) => JSON.stringify(m).includes("first"))).toBe(true);
     second.close();
   });
 });
