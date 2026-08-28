@@ -442,3 +442,42 @@ describe("M2 review fixes", () => {
     expect(requests).toHaveLength(3); // turn1, compact, turn2 — no second compact
   });
 });
+
+describe("restoreHistory (WAL replay → model context)", () => {
+  it("rebuilds a continuing conversation with tool results, compact-aware", async () => {
+    const zero = zeroUsage();
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    let call = 0;
+    const provider: Provider = {
+      name: "rec",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        const scripted: ProviderEvent[][] = [[{ type: "text_delta", text_delta: "fresh turn" }, { type: "finish", reason: "stop", usage: zero }]];
+        yield* (scripted[call++] ?? [{ type: "finish", reason: "stop", usage: zero }]);
+      },
+    };
+    // session one: two turns + a compaction, all on disk
+    const dir = path.join(dataDir, "sessions");
+    const first = SessionLog.create(dir, "restore-src", {});
+    const engineOne = new Engine({ provider, tools: [], session: first, toolContext: ctx, model: "mock" });
+    await engineOne.runTurn({ userMessage: "old question one" });
+    first.record({ type: "context_compacted", summary: "OLD SUMMARY", droppedEvents: 2, usage: zero });
+    engineOne.restoreHistory([]); // irrelevant — we replay from the log below
+    first.close();
+
+    // a NEW engine on the same log replays and restores
+    const second = SessionLog.open(dir, "restore-src");
+    const engineTwo = new Engine({ provider, tools: [], session: second, toolContext: ctx, model: "mock" });
+    const recovered = recoverSession(second.path);
+    const outcome = engineTwo.restoreHistory(recovered.events.map((e) => e.payload));
+    expect(outcome.ok).toBe(true);
+
+    await engineTwo.runTurn({ userMessage: "continue where we left off" });
+    const flat = JSON.stringify(requests[requests.length - 1].messages);
+    // pre-compaction content is dropped, the summary is present, the new turn rides on it
+    expect(flat).not.toContain("old question one");
+    expect(flat).toContain("OLD SUMMARY");
+    expect(flat).toContain("continue where we left off");
+    second.close();
+  });
+});

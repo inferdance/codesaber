@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { createMockProvider, zeroUsage, type ProviderEvent } from "@saber/ai";
+import { createMockProvider, zeroUsage, type Provider, type ProviderEvent } from "@saber/ai";
 import { createSaberServer } from "../index.js";
 
 let workspace: string;
@@ -180,6 +180,40 @@ describe("server: WS round-trip with mock provider", () => {
     socket.send(JSON.stringify({ type: "steer", commandId: "st-3", sessionId: "stale-abort", text: "late" }));
     const steerAck = await once(messages, (m) => m.type === "ack" && m.kind === "steer") as { ok?: boolean };
     expect(steerAck.ok).toBe(false);
+  });
+
+  it("continues a restarted session with restored model context", async () => {
+    const requests: Array<{ messages: unknown[] }> = [];
+    const makeProvider = (): Provider => ({
+      name: "recording",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request as { messages: unknown[] });
+        yield { type: "text_delta", text_delta: "answer" };
+        yield { type: "finish", reason: "stop", usage: zeroUsage() };
+      },
+    });
+    const first = await createSaberServer({ provider: makeProvider(), model: "mock", cwd: workspace, dataDir });
+    const address = await first.listen();
+    const socket = await openSocket(`${address.replace("http", "ws")}/ws`);
+    const messages: Array<Record<string, unknown>> = [];
+    socket.on("message", (raw) => messages.push(JSON.parse(raw.toString())));
+    socket.send(JSON.stringify({ type: "prompt", commandId: "r-1", sessionId: "resume-ctx", text: "remember the word kumquat" }));
+    await once(messages, (m) => m.type === "turn_complete");
+    await first.close();
+
+    const second = await createSaberServer({ provider: makeProvider(), model: "mock", cwd: workspace, dataDir });
+    cleanup.push(() => second.close());
+    const address2 = await second.listen();
+    const socket2 = await openSocket(`${address2.replace("http", "ws")}/ws`);
+    const messages2: Array<Record<string, unknown>> = [];
+    socket2.on("message", (raw) => messages2.push(JSON.parse(raw.toString())));
+    socket2.send(JSON.stringify({ type: "prompt", commandId: "r-2", sessionId: "resume-ctx", text: "what word did I ask you to remember?" }));
+    await once(messages2, (m) => m.type === "turn_complete");
+
+    // the second server's provider request carries the FIRST turn's context
+    const flat = JSON.stringify(requests[requests.length - 1].messages);
+    expect(flat).toContain("kumquat");
+    expect(flat).toContain("what word did I ask");
   });
 
   it("rejects session ids that try to escape the sessions directory", async () => {

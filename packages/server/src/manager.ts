@@ -264,6 +264,20 @@ export class AgentServer {
       queue: [], draining: false, closed: false,
       current: null, state: controllerState, drainPromise: null,
     };
+    // server restart onto an existing log: rebuild the model-visible history
+    // so continuing the session actually continues the conversation
+    if (fs.existsSync(file)) {
+      const recovered = recoverSession(file);
+      if (recovered.tornAt !== undefined) {
+        session.close();
+        throw new Error(`session ${sessionId} is corrupt at record ${recovered.tornAt}; refusing to continue`);
+      }
+      if (recovered.unfinishedToolCalls.length > 0) {
+        session.close();
+        throw new Error(`session ${sessionId} has ${recovered.unfinishedToolCalls.length} unfinished tool call(s); refusing to continue`);
+      }
+      engine.restoreHistory(recovered.events.map((e) => e.payload));
+    }
     this.handles.set(sessionId, handle);
     return handle;
   }

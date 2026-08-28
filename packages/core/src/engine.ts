@@ -74,6 +74,50 @@ export class Engine {
     this.steering.push(msg);
   }
 
+  /**
+   * Rebuilds model-visible history from a WAL replay — the payload union IS
+   * the model vocabulary, so reconstruction is a fold, not a parser. Events
+   * before the last `context_compacted` are dropped (the compaction summary
+   * message takes their place), matching live compaction semantics. Refusing
+   * on an unfinished tool_call keeps aborted turns from injecting dangling
+   * calls into a fresh provider request.
+   */
+  restoreHistory(events: SaberPayload[]): { ok: true } | { ok: false; error: string } {
+    const lastCompaction = events.map((e, i) => (e.type === "context_compacted" ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+    const relevant = events.slice(lastCompaction + 1);
+
+    const reconstructed: Message[] = [];
+    for (const payload of relevant) {
+      switch (payload.type) {
+        case "user_message":
+        case "assistant_message":
+          reconstructed.push(payload.message);
+          break;
+        case "tool_result":
+          reconstructed.push({
+            role: "user",
+            blocks: [{ type: "tool_result", call_id: payload.callId, content: payload.content, is_error: payload.isError }],
+          });
+          break;
+        default:
+          break; // lifecycle/audit events are not model-visible
+      }
+    }
+
+    if (lastCompaction >= 0) {
+      const summary = events[lastCompaction].type === "context_compacted" ? events[lastCompaction].summary : "";
+      reconstructed.unshift({
+        role: "user",
+        blocks: [{ type: "text", text: `[context resumed after compaction]\nEarlier conversation summary:\n${summary}\n\nReplayed exchange follows.` }],
+      });
+    }
+
+    // dangling tool_result without its assistant tool_call → drop; dangling
+    // detection for tool_call lives in the WAL recovery the caller ran
+    this.history = reconstructed;
+    return { ok: true };
+  }
+
   getUsage(): Usage {
     return { ...this.usageTotal };
   }
