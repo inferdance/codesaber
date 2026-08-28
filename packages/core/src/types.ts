@@ -10,6 +10,9 @@ export interface ToolContext {
   readFiles: Map<string, number>;
   /** Current turn's abort signal; tools that spawn processes must honor it. */
   signal?: AbortSignal;
+  /** Engine event sink, set per turn; tools with nested tool dispatch
+   *  (run_code) use it to keep "model-visible ⟺ logged" intact. */
+  dispatch?: (payload: import("./events.js").SaberPayload, opts?: { sync?: boolean }) => void;
 }
 
 export interface ToolDefinition {

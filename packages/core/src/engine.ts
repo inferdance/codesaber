@@ -95,6 +95,7 @@ export class Engine {
   private async loop(input: TurnInput): Promise<{ answer: string; outcome: TurnOutcome }> {
     const signal = input.signal;
     this.opts.toolContext.signal = signal;
+    this.opts.toolContext.dispatch = (payload, opts) => this.dispatch(payload, opts);
     const turnId = `t-${this.opts.session.nextSeq()}`;
     this.dispatch({ type: "turn_started", turnId });
 
