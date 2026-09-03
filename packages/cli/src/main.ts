@@ -64,8 +64,11 @@ async function runExec(args: string[]): Promise<void> {
   const runTask = createTaskRunner({ provider, model: resolvedModel, cwd, dataDir });
   const tools = createTools(toolContext, { runTask });
 
+  // reasoning models orchestrating subagents routinely need >300s; a turn
+  // cut at the deadline after the work finished is the worst outcome
+  const effectiveTimeout = timeoutSec ?? 600;
   const controller = new AbortController();
-  const timer = timeoutSec !== undefined ? setTimeout(() => controller.abort(), timeoutSec * 1000) : undefined;
+  const timer = setTimeout(() => controller.abort(), effectiveTimeout * 1000);
   pipeClosed.abort = () => controller.abort();
 
   const compactTokens = Number(process.env.SABER_COMPACT_TOKENS ?? "100000");
@@ -149,7 +152,7 @@ function help(): void {
   console.log(`saber — coding agent
 
 USAGE:
-  saber exec -p <prompt> [--json] [--model <model>] [--timeout <seconds>]
+  saber exec -p <prompt> [--json] [--model <model>] [--timeout <seconds>, default 600]
   saber server [--port <port>] [--model <model>]
   saber tui [--http <url>] [--session <id>]
   saber doctor

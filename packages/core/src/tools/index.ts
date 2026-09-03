@@ -67,9 +67,12 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
         // cannot survive (execa has no killDescendants option).
         // SABER_SANDBOX=1 additionally wraps the command in a macOS Seatbelt
         // profile: writes confined to cwd + dataDir, network denied.
+        // --noprofile --norc: shell init files are user-env noise (a stale
+        // .bashrc line once polluted every call's stderr) and can flip exit
+        // codes; the tool already runs a minimal environment by design
         const bashArgv = sandboxRequested
-          ? confineArgv(["bash", "-c", args.command], { writableRoots: [tctx.cwd, tctx.dataDir] })
-          : ["bash", "-c", args.command];
+          ? confineArgv(["bash", "--noprofile", "--norc", "-c", args.command], { writableRoots: [tctx.cwd, tctx.dataDir] })
+          : ["bash", "--noprofile", "--norc", "-c", args.command];
         if (!bashArgv) return { content: "sandbox requested but confinement failed", isError: true };
         const subprocess = execa(bashArgv[0], bashArgv.slice(1), {
           cwd: tctx.cwd,
@@ -113,7 +116,8 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
 
   const read = defineTool(
     "read",
-    "Reads a file and returns it with absolute line numbers (default first 2000 lines). " +
+    "Reads a file and returns it with line numbers: each line is prefixed with a right-aligned " +
+      "line number and a TAB — strip that prefix before parsing values (default first 2000 lines). " +
     "Pass offset/limit to page through long files. You must read a file before editing it.",
     z.object({
       path: z.string().min(1).describe("file path, relative to cwd or absolute"),
@@ -127,15 +131,20 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
       try {
         const abs = path.resolve(tctx.cwd, args.path);
         const content = await fs.promises.readFile(abs, "utf-8");
+        // a trailing newline is line TERMINATOR, not an extra line: the
+        // phantom "" from split must never surface as a numbered line —
+        // models write line-number strippers that it actively breaks
         const allLines = content.split("\n");
+        const hasFinalNewline = allLines.length > 0 && allLines[allLines.length - 1] === "";
+        const realLines = hasFinalNewline ? allLines.slice(0, -1) : allLines;
         const offset = args.offset ?? 1;
         const limit = args.limit ?? 2000;
-        const start = Math.min(offset - 1, allLines.length);
-        const lines = allLines.slice(start, start + limit);
+        const start = Math.min(offset - 1, realLines.length);
+        const lines = realLines.slice(start, start + limit);
         const numbered = lines.map((l, i) => `${String(start + i + 1).padStart(6)}\t${l.slice(0, 2000)}`).join("\n");
         tctx.readFiles.set(abs, (await fs.promises.stat(abs)).mtimeMs);
-        const note = start + lines.length < allLines.length
-          ? `\n[showing lines ${start + 1}-${start + lines.length} of ${allLines.length}]`
+        const note = start + lines.length < realLines.length
+          ? `\n[showing lines ${start + 1}-${start + lines.length} of ${realLines.length}]`
           : "";
         return { content: numbered + note, isError: false };
       } catch (e) {

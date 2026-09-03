@@ -165,7 +165,7 @@ describe("read/write tools", () => {
     expect(result.content).toContain("2\tl2");
     expect(result.content).toContain("3\tl3");
     expect(result.content).not.toContain("l1\n");
-    expect(result.content).toMatch(/showing lines 2-3 of 6/);
+    expect(result.content).toMatch(/showing lines 2-3 of 5/);
   });
 
   it("write is denied outside writable roots", async () => {
@@ -335,5 +335,26 @@ describe("glob tool", () => {
     const result = await tool("glob").execute({ pattern: "**/*.md", path: "notes.md" }, ctx);
     expect(result.isError).toBe(false);
     expect(result.content).toMatch(/notes\.md/);
+  });
+});
+
+describe("dogfooding fixes (bench round)", () => {
+  it("read never numbers the phantom trailing empty line", async () => {
+    writeFileSync(path.join(workspace, "nl.txt"), "alpha\nbeta\n"); // trailing \n
+    const result = await tool("read").execute({ path: "nl.txt" }, ctx);
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("1\talpha");
+    expect(result.content).toContain("2\tbeta");
+    expect(result.content).not.toMatch(/3\t/); // no "     3\t" phantom
+    expect(result.content).not.toContain("of 3");
+  });
+
+  it("bash output carries no shell-init noise and a clean exit", async () => {
+    const result = await tool("bash").execute({ command: "echo clean" }, ctx);
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("clean");
+    expect(result.content).not.toContain("bashrc");
+    expect(result.content).toMatch(/\[exit: 0\]/);
+    expect(result.content.split("[stderr]").length).toBe(1); // no stderr section at all
   });
 });
