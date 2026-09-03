@@ -371,8 +371,12 @@ export class Engine {
       if (step + 1 === MAX_STEPS) outcome = { kind: "max_steps" };
     }
 
+    // compact BEFORE settling the turn: frontends keep isRunning through
+    // compaction, and a deadline crossed mid-compaction must surface as
+    // aborted — never a fake success for work that outlived the timeout
+    if (outcome.kind === "done") await this.maybeCompact(signal); // never compact failed/aborted turns
+    if (outcome.kind === "done" && signal?.aborted) outcome = { kind: "aborted" };
     this.dispatch({ type: "turn_complete", turnId, reason: outcome.kind });
-    if (outcome.kind === "done") await this.maybeCompact(); // never compact failed/aborted turns
     return { answer: lastText, outcome };
   }
 
@@ -381,14 +385,18 @@ export class Engine {
    * and replace it with the summary plus the latest exchange. Failure keeps
    * the original history (compaction must never lose a session).
    */
-  private async maybeCompact(): Promise<void> {
+  private async maybeCompact(parentSignal?: AbortSignal): Promise<void> {
     const threshold = this.opts.compact?.thresholdTokens;
     if (threshold === undefined) return;
+    if (parentSignal?.aborted) return; // deadline already passed — compacting would outlive it
     if (estimateTokens(this.history) <= threshold) return;
 
     const dropped = this.history.length;
+    const sources = [AbortSignal.timeout(120_000)];
+    if (parentSignal) sources.push(parentSignal);
+    const compactSignal = AbortSignal.any(sources);
     try {
-      const { summary, usage } = await this.summarize();
+      const { summary, usage } = await this.summarize(compactSignal);
       // keep the latest exchange when it fits; shrink to the last user
       // message, then to the summary alone, until back under threshold
       const seed: Message = {
@@ -426,7 +434,7 @@ export class Engine {
     }
   }
 
-  private async summarize(): Promise<{ summary: string; usage: Usage }> {
+  private async summarize(signal?: AbortSignal): Promise<{ summary: string; usage: Usage }> {
     const transcript = this.history
       .map((message) => message.blocks.map((b) => {
         if (b.type === "text") return b.text;
@@ -443,7 +451,7 @@ export class Engine {
       system: COMPACT_SYSTEM,
       messages: [{ role: "user", blocks: [{ type: "text", text: transcript }] }],
       tools: [],
-      signal: AbortSignal.timeout(120_000), // compaction must not hang the turn boundary
+      signal, // deadline-composed: compaction must not hang OR outlive the turn
     })) {
       if (event.type === "text_delta") summary += event.text_delta;
       if (event.type === "finish") usage = event.usage;

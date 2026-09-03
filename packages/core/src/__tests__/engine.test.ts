@@ -666,3 +666,46 @@ describe("restoreHistory hardening (review round 2)", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe("compact deadline composition (bench review)", () => {
+  it("compaction crossing the turn deadline aborts — no fake success past 600s", async () => {
+    const zero = zeroUsage();
+    const longAnswer = "answer ".repeat(200);
+    let call = 0;
+    const calls: string[] = [];
+    const provider: Provider = {
+      name: "slow-compact",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        call += 1;
+        calls.push(`call${call}`);
+        if (call === 1) {
+          yield { type: "text_delta", text_delta: longAnswer };
+          yield { type: "finish", reason: "stop", usage: zero };
+        } else if (call === 2) {
+          // compaction summary arrives only after the parent deadline fires
+          await new Promise<void>((resolve) => {
+            if (request.signal?.aborted) return resolve();
+            request.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          yield { type: "text_delta", text_delta: "SUMMARY" };
+          yield { type: "finish", reason: "stop", usage: zero };
+        }
+        return;
+      },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `deadline-${Date.now()}`, {});
+    const engine = new Engine({
+      provider, tools: [], session, toolContext: ctx, model: "mock",
+      compact: { thresholdTokens: 50 },
+    });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 80); // deadline lands mid-compaction
+    const started = Date.now();
+    const { answer, outcome } = await engine.runTurn({ userMessage: "go", signal: controller.signal });
+    // the turn answer itself completed before the deadline...
+    expect(answer).toContain("answer");
+    // ...but the run must not report success for work that outlived it
+    expect(outcome.kind).toBe("aborted");
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+});
