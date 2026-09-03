@@ -709,3 +709,93 @@ describe("compact deadline composition (bench review)", () => {
     expect(Date.now() - started).toBeLessThan(3_000);
   });
 });
+
+describe("compaction window semantics (bench review round 2)", () => {
+  it("steer during the compaction window is rejected by the engine", async () => {
+    const longAnswer = "answer ".repeat(200);
+    const zero = zeroUsage();
+    let call = 0;
+    let releaseCompact!: () => void;
+    const gate = new Promise<void>((r) => { releaseCompact = r; });
+    const provider: Provider = {
+      name: "gated-compact",
+      async *stream(): AsyncGenerator<ProviderEvent> {
+        call += 1;
+        if (call === 1) {
+          yield { type: "text_delta", text_delta: longAnswer };
+          yield { type: "finish", reason: "stop", usage: zero };
+        } else {
+          await gate; // hold the compaction window open
+          yield { type: "text_delta", text_delta: "SUMMARY" };
+          yield { type: "finish", reason: "stop", usage: zero };
+        }
+      },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `steerwin-${Date.now()}`, {});
+    const engine = new Engine({ provider, tools: [], session, toolContext: ctx, model: "mock", compact: { thresholdTokens: 50 } });
+    const turn = engine.runTurn({ userMessage: "go" });
+    await new Promise<void>((resolve) => {
+      const started = Date.now();
+      const tick = (): void => {
+        if (call >= 2) return resolve();
+        if (Date.now() - started > 4000) throw new Error("compaction never started");
+        setTimeout(tick, 10);
+      };
+      tick();
+    });
+    // compaction window is open: steer must be refused...
+    expect(engine.steer("LATE-STEER")).toBe(false);
+    releaseCompact();
+    const { outcome } = await turn;
+    expect(outcome.kind).toBe("done");
+    // ...and must NOT pollute the next, unrelated turn
+    const requests: import("@saber/ai").ChatRequest[] = [];
+    const recorder: Provider = {
+      name: "rec",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        requests.push(request);
+        yield { type: "finish", reason: "stop", usage: zero };
+      },
+    };
+    const engine2 = new Engine({ provider: recorder, tools: [], session, toolContext: ctx, model: "mock" });
+    engine2.restoreHistory(recoverSession(session.path).events.map((e) => e.payload));
+    await engine2.runTurn({ userMessage: "unrelated" });
+    expect(JSON.stringify(requests[0].messages)).not.toContain("LATE-STEER");
+  });
+
+  it("a deadline-crossed compaction is discarded — no partial summary, history intact", async () => {
+    const longAnswer = "answer ".repeat(200);
+    const zero = zeroUsage();
+    let call = 0;
+    const provider: Provider = {
+      name: "partial-compact",
+      async *stream(request): AsyncGenerator<ProviderEvent> {
+        call += 1;
+        if (call === 1) {
+          yield { type: "text_delta", text_delta: longAnswer };
+          yield { type: "finish", reason: "stop", usage: zero };
+        } else {
+          // emits a PARTIAL summary, then learns of the abort and finishes cleanly
+          yield { type: "text_delta", text_delta: "PARTIAL" };
+          await new Promise<void>((resolve) => {
+            if (request.signal?.aborted) return resolve();
+            request.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          yield { type: "finish", reason: "stop", usage: zero };
+        }
+      },
+    };
+    const session = SessionLog.create(path.join(dataDir, "sessions"), `partial-${Date.now()}`, {});
+    const engine = new Engine({ provider, tools: [], session, toolContext: ctx, model: "mock", compact: { thresholdTokens: 50 } });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+    const { outcome } = await engine.runTurn({ userMessage: "go", signal: controller.signal });
+    expect(outcome.kind).toBe("aborted");
+    // the partial compaction must NOT be committed
+    const log = recoverSession(session.path);
+    expect(log.events.some((e) => e.payload.type === "context_compacted")).toBe(false);
+    // and the original history survives untouched
+    const history = (engine as unknown as { history: Message[] }).history;
+    expect(JSON.stringify(history)).toContain("answer answer");
+  });
+});

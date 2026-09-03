@@ -153,10 +153,14 @@ export class AgentServer {
   steer(input: { sessionId: string; text: string; commandId: string }): boolean {
     const handle = this.handles.get(input.sessionId);
     if (!handle) return false;
-    if (!handle.draining || handle.current === null) return false;
     if (this.seenCommands.has(input.commandId)) return false;
+    if (!handle.draining || handle.current === null) return false;
     this.markCommand(input.commandId);
-    handle.engine.steer(input.text);
+    if (!handle.engine.steer(input.text)) {
+      // compaction window: no step left to consume it — queue as the next
+      // turn instead of silently stranding the user's input
+      handle.queue.push(input.text);
+    }
     return true;
   }
 

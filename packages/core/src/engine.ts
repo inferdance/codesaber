@@ -132,13 +132,20 @@ export class Engine {
   private history: Message[] = [];
   private usageTotal: Usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0 };
   private steering: string[] = [];
+  private compacting = false;
   private running = false;
 
   constructor(private opts: EngineOptions) {}
 
-  /** Queues a user message for the current/next turn (steering). */
-  steer(msg: string): void {
+  /** Queues a user message for the current/next turn (steering).
+   *  Returns false once the turn is in its compaction window — there is no
+   *  future step left to consume the message, so the caller must route it
+   *  to the next turn instead of letting it silently pollute an unrelated
+   *  future prompt. */
+  steer(msg: string): boolean {
+    if (this.compacting) return false;
     this.steering.push(msg);
+    return true;
   }
 
   /**
@@ -374,7 +381,14 @@ export class Engine {
     // compact BEFORE settling the turn: frontends keep isRunning through
     // compaction, and a deadline crossed mid-compaction must surface as
     // aborted — never a fake success for work that outlived the timeout
-    if (outcome.kind === "done") await this.maybeCompact(signal); // never compact failed/aborted turns
+    if (outcome.kind === "done") {
+      this.compacting = true; // no step left to consume steers — callers get false
+      try {
+        await this.maybeCompact(signal); // never compact failed/aborted turns
+      } finally {
+        this.compacting = false;
+      }
+    }
     if (outcome.kind === "done" && signal?.aborted) outcome = { kind: "aborted" };
     this.dispatch({ type: "turn_complete", turnId, reason: outcome.kind });
     return { answer: lastText, outcome };
@@ -397,6 +411,12 @@ export class Engine {
     const compactSignal = AbortSignal.any(sources);
     try {
       const { summary, usage } = await this.summarize(compactSignal);
+      // a deadline crossed mid-summarize means the result raced the cancel:
+      // committing it would persist a PARTIAL summary and drop live context
+      if (compactSignal.aborted) {
+        this.dispatch({ type: "error", message: "compaction cancelled at the deadline; history kept" });
+        return;
+      }
       // keep the latest exchange when it fits; shrink to the last user
       // message, then to the summary alone, until back under threshold
       const seed: Message = {
