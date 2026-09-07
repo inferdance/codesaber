@@ -1,5 +1,6 @@
 import React from "react";
 import { render } from "ink";
+import * as path from "node:path";
 import { App } from "./App.js";
 
 function wsUrlFromHttp(http: string): string {
@@ -9,6 +10,13 @@ function wsUrlFromHttp(http: string): string {
   return `${protocol}//${parsed.host}/ws`;
 }
 
+async function isAlive(httpOrigin: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${httpOrigin}/api/health`, { signal: AbortSignal.timeout(700) });
+    return response.ok;
+  } catch { return false; }
+}
+
 export async function runTui(rawArgs: string[]): Promise<void> {
   const flag = (name: string): string | undefined => {
     const index = rawArgs.indexOf(`--${name}`);
@@ -16,13 +24,17 @@ export async function runTui(rawArgs: string[]): Promise<void> {
   };
 
   if (rawArgs.includes("--help")) {
-    console.log(`saber tui — terminal frontend (talks to a running saber server)
+    console.log(`saber tui — terminal frontend
 
 USAGE:
-  saber tui [--http <url>] [--url <ws url>] [--session <id>]
+  saber tui [--http <url>] [--url <ws url>] [--session <id>] [--port <port>] [--model <model>]
+
+MODES:
+  no server running → an embedded server boots in-process (zero ceremony)
+  server already running at the target → connects to it (shared sessions)
 
 DEFAULTS:
-  http http://127.0.0.1:3080 (ws derived as <http>/ws)
+  http http://127.0.0.1:3080
 
 KEYS:
   Enter send / steer · Tab session switcher · Ctrl+A abort running turn ·
@@ -36,9 +48,12 @@ KEYS:
   }
 
   const explicitHttp = flag("http");
+  const modelFlag = flag("model");
+  const portFlag = Number(flag("port"));
+  const defaultPort = Number.isInteger(portFlag) && portFlag > 0 && portFlag < 65536 ? portFlag : 3080;
   let wsUrl: string;
   try {
-    wsUrl = flag("url") ?? wsUrlFromHttp(explicitHttp ?? "http://127.0.0.1:3080");
+    wsUrl = flag("url") ?? wsUrlFromHttp(explicitHttp ?? `http://127.0.0.1:${defaultPort}`);
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(2);
@@ -48,7 +63,55 @@ KEYS:
   // with only --url given, the REST session list must target the SAME server
   // as the socket — derive the http origin from the ws url
   const httpOrigin = (() => { const u = new URL(wsUrl); return `${u.protocol === "wss:" ? "https:" : "http:"}//${u.host}`; })();
+  let httpUrl = explicitHttp ?? httpOrigin;
 
-  const instance = render(<App wsUrl={wsUrl} httpUrl={explicitHttp ?? httpOrigin} sessionId={sessionId} />);
-  await instance.waitUntilExit();
+  // codex-style target resolution: connect to a live server when one is
+  // there (shared sessions), otherwise boot an embedded in-process server
+  // so `saber tui` is a single zero-ceremony command
+  const explicitTarget = flag("url") !== undefined || explicitHttp !== undefined;
+  let cleanup: (() => Promise<void>) | null = null;
+  if (!explicitTarget && !(await isAlive(httpUrl))) {
+    const { createProviderFromEnv } = await import("@saber/ai");
+    const fromEnv = createProviderFromEnv();
+    if (!fromEnv) {
+      console.error("error: set ANTHROPIC_API_KEY or OPENAI_API_KEY (or start `saber server` first)");
+      process.exit(1);
+    }
+    const { provider, defaultModel } = fromEnv;
+    const dataDir = process.env.SABER_DATA_DIR ?? path.join(process.env.HOME ?? ".", ".codesaber");
+    await import("node:fs").then((fs) => fs.mkdirSync(dataDir, { recursive: true }));
+    const cwd = process.cwd();
+    const { createSaberServer } = await import("@saber/server");
+    const server = await createSaberServer({
+      provider,
+      model: modelFlag ?? process.env.SABER_MODEL ?? defaultModel,
+      cwd,
+      dataDir,
+      system: `You are saber, a coding agent. Be direct and surgical.
+
+# Environment
+- cwd: ${cwd}
+- platform: ${process.platform}
+
+# Rules
+- Read a file before editing it; use edit (not sed) for code changes.
+- Prefer grep/glob to locate code over listing directories with bash.
+- After changing code, verify with tests or a build via bash.
+- Cite locations as path:line in your final answer.`,
+      port: defaultPort,
+      host: "127.0.0.1",
+    });
+    const address = await server.listen();
+    httpUrl = address;
+    wsUrl = `${address.replace("http", "ws")}/ws`;
+    // the embedded server's lifetime is the TUI's lifetime
+    cleanup = () => server.close();
+  }
+
+  const instance = render(<App wsUrl={wsUrl} httpUrl={httpUrl} sessionId={sessionId} />);
+  try {
+    await instance.waitUntilExit();
+  } finally {
+    if (cleanup) await cleanup();
+  }
 }

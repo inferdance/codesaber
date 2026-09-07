@@ -49,12 +49,16 @@ pnpm saber exec -p "..." --model glm-5.3
 Three frontends, one engine:
 
 ```bash
-pnpm saber server --port 3080    # web UI at http://127.0.0.1:3080
-pnpm saber tui                   # terminal UI against a running server (Tab = session switcher)
-pnpm saber exec -p "..."         # headless
+pnpm saber tui                   # terminal UI — standalone: no server needed, one boots embedded
+pnpm saber server --port 3080    # then the web UI at http://127.0.0.1:3080 shares the same sessions
+pnpm saber exec -p "..."         # headless one-shot
 pnpm saber list                  # recent sessions
-pnpm saber resume <id> -p "..."          # continue a session
+pnpm saber resume <id> -p "..."  # continue a session
 ```
+
+`saber tui` resolves its target codex-style: a server already listening at
+the target is reused (shared sessions across TUI/web/IDE); otherwise an
+embedded in-process server boots for the TUI's lifetime.
 
 Frontend capabilities (M2): context auto-compaction at the turn boundary
 (`SABER_COMPACT_TOKENS`, default 100k est. tokens, 0 disables), `task` tool

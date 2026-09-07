@@ -131,6 +131,12 @@ importers:
 
   packages/tui:
     dependencies:
+      '@saber/ai':
+        specifier: workspace:*
+        version: link:../ai
+      '@saber/server':
+        specifier: workspace:*
+        version: link:../server
       '@saber/ui-shared':
         specifier: workspace:*
         version: link:../ui-shared

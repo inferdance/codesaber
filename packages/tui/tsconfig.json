@@ -6,6 +6,15 @@
     "rootDir": "src",
     "jsx": "react-jsx"
   },
-  "references": [{ "path": "../ui-shared" }],
-  "include": ["src"]
+  "references": [
+    {
+      "path": "../ui-shared"
+    },
+    {
+      "path": "../server"
+    }
+  ],
+  "include": [
+    "src"
+  ]
 }
