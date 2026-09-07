@@ -71,7 +71,7 @@ importers:
         version: 3.25.76
     optionalDependencies:
       isolated-vm:
-        specifier: ^7.0.0
+        specifier: ^7.0.1
         version: 7.0.1
     devDependencies:
       typescript:
