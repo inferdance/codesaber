@@ -99,6 +99,61 @@ export interface RunCodeOptions {
   timeoutMs?: number;
 }
 
+/** Strips erasable TS and returns body-JS with top-level `return` legal,
+ *  or null when the program uses non-erasable syntax. */
+export function stripErasableTs(code: string): string | null {
+  try {
+    // lazy Node-only import: core must stay loadable on runtimes without it
+    const { stripTypeScriptTypes } = require("node:module") as typeof import("node:module");
+    const wrapperHead = "async function __saberProgram(tools) {";
+    const wrapped = stripTypeScriptTypes(`${wrapperHead}\n${code}\n}`, { mode: "strip" });
+    return wrapped.slice(wrapperHead.length, wrapped.lastIndexOf("}"));
+  } catch { return null; }
+}
+
+/**
+ * Builds the sub-call dispatcher shared by BOTH runtimes: serialized
+ * execution (exclusive tools never overlap), WAL intent-before-side-effect,
+ * policy validation via the tools themselves.
+ */
+export function makeToolBridge(tools: ToolDefinition[], ctx: ToolContext): {
+  dispatch: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
+} {
+  let queue: Promise<void> = Promise.resolve();
+  let counter = 0;
+
+  const dispatch = (name: string, args: Record<string, unknown>): Promise<ToolResult> => {
+    const id = `rc-${++counter}-${name}`;
+    return new Promise<ToolResult>((resolve) => {
+      queue = queue.then(async () => {
+        const tool = tools.find((t) => t.name === name) ?? null;
+        if (!tool) {
+          resolve({ content: `unknown tool: ${name}`, isError: true });
+          return;
+        }
+        try {
+          ctx.dispatch?.({ type: "tool_call", callId: id, name, args }, { sync: true });
+        } catch (e) {
+          resolve({ content: `WAL intent failed, tool not executed: ${e instanceof Error ? e.message : String(e)}`, isError: true });
+          return;
+        }
+        let result: ToolResult;
+        try {
+          result = await tool.execute(args, ctx);
+        } catch (e) {
+          result = { content: `tool crashed: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+        }
+        ctx.dispatch?.({ type: "tool_result", callId: id, name, content: result.content, isError: result.isError });
+        resolve(result);
+      }, () => {
+        resolve({ content: "run_code already ended; call not executed", isError: true });
+      });
+    });
+  };
+
+  return { dispatch };
+}
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 /** Hard cap on waiting for in-flight sub-calls after an error terminal —
  *  non-cooperative tools (e.g. a read stuck on a FIFO) must not hang the
@@ -137,15 +192,9 @@ export async function runCode(
       import("node:crypto"),
     ]);
 
-    let javascript: string;
-    try {
-      // strip requires a valid module: top-level `return` is only legal
-      // inside a function body, so wrap first and slice the body out after
-      const wrapperHead = "async function __saberProgram(tools) {";
-      const wrapped = stripTypeScriptTypes(`${wrapperHead}\n${options.code}\n}`, { mode: "strip" });
-      javascript = wrapped.slice(wrapperHead.length, wrapped.lastIndexOf("}"));
-    } catch (e) {
-      return { content: `code transform failed (erasable TypeScript only — no enums/namespaces): ${e instanceof Error ? e.message : String(e)}`, isError: true };
+    const javascript = stripErasableTs(options.code);
+    if (javascript === null) {
+      return { content: "code transform failed (erasable TypeScript only — no enums/namespaces)", isError: true };
     }
 
     const file = await ensureWorkerFile({ writeFile, mkdir }, nodeOs.tmpdir(), nodePath.join, nodeCrypto.randomUUID());

@@ -362,7 +362,7 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
   // same trust as bash, NOT the PathPolicy-confined trust of native tools.
   // The module is imported lazily so runtimes without node:module helpers
   // (Bun dev) can still load the rest of the toolset.
-  if (process.env.SABER_CODE === "1") {
+  if (process.env.SABER_CODE === "1" || process.env.SABER_CODE === "isolate") {
     tools.push(defineTool(
       "run_code",
       "Runs an erasable-TypeScript program (annotations/generics only — no enums/namespaces) " +
@@ -379,12 +379,34 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
       "exclusive",
       async (args, tctx): Promise<ToolResult> => {
         if (tctx.signal?.aborted) return { content: "aborted before execution", isError: true };
+        const usable = tools.filter((t) => t.name !== "run_code");
+        // SABER_CODE=isolate: a REAL V8 security boundary (no process/fs/net
+        // in the guest); worker mode remains containment-only
+        if (process.env.SABER_CODE === "isolate") {
+          const [{ runCodeIsolated, isIsolatedVmAvailable }, { makeToolBridge, stripErasableTs }] =
+            await Promise.all([import("./isolated.js"), import("./code.js")]);
+          if (!(await isIsolatedVmAvailable())) {
+            return { content: "SABER_CODE=isolate but isolated-vm is unavailable on this platform; isolation was explicitly requested, not falling back", isError: true };
+          }
+          const stripped = stripErasableTs(args.code);
+          if (stripped === null) {
+            return { content: "code transform failed (erasable TypeScript only — no enums/namespaces)", isError: true };
+          }
+          const abortGuard = new AbortController();
+          const onParentAbort = (): void => abortGuard.abort();
+          tctx.signal?.addEventListener("abort", onParentAbort, { once: true });
+          const bridge = makeToolBridge(usable, { ...tctx, signal: abortGuard.signal });
+          try {
+            return await runCodeIsolated(
+              { code: stripped, timeoutMs: args.timeout_ms ?? 120_000 },
+              bridge.dispatch,
+            );
+          } finally {
+            tctx.signal?.removeEventListener("abort", onParentAbort);
+          }
+        }
         const { runCode } = await import("./code.js");
-        return runCode(
-          { code: args.code, timeoutMs: args.timeout_ms },
-          tools.filter((t) => t.name !== "run_code"),
-          tctx,
-        );
+        return runCode({ code: args.code, timeoutMs: args.timeout_ms }, usable, tctx);
       },
     ));
   }
