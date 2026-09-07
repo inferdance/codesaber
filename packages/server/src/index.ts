@@ -54,6 +54,8 @@ export async function createSaberServer(opts: ServerOptions): Promise<SaberServe
 
   app.get("/api/sessions", async () => agent.sessionSummaries());
 
+  app.get("/api/sessions/live", async () => ({ count: agent.liveSessionCount() }));
+
   app.get("/api/sessions/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
     try {

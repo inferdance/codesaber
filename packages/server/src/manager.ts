@@ -170,6 +170,17 @@ export class AgentServer {
    * turn — a stale abort from a finished turn must never kill the next one —
    * and an idle session has nothing to abort at all.
    */
+  /** Sessions THIS process holds live engine handles for — the truthful
+   *  answer to "is a turn actually running right now" (WAL-derived
+   *  isRunning can be true for logs left by a crashed process). */
+  liveSessionCount(): number {
+    let count = 0;
+    for (const handle of this.handles.values()) {
+      if (handle.draining) count += 1;
+    }
+    return count;
+  }
+
   abort(sessionId: string, turnId?: string): boolean {
     const handle = this.handles.get(sessionId);
     if (!handle) return false;

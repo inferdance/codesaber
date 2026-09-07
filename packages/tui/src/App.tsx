@@ -5,6 +5,8 @@ import { useSaberSession } from "@saber/ui-shared/hook";
 import type { MessageView } from "@saber/ui-shared";
 import { sanitizeTerminalText } from "./sanitize.js";
 
+export type TuiExitKind = "detach" | "quit";
+
 interface SessionSummary {
   id: string;
   title: string;
@@ -42,7 +44,7 @@ function MessageRow({ message }: { message: MessageView }) {
   }
 }
 
-export function App({ wsUrl, httpUrl, sessionId }: { wsUrl: string; httpUrl: string; sessionId?: string }) {
+export function App({ wsUrl, httpUrl, sessionId, onExitKind }: { wsUrl: string; httpUrl: string; sessionId?: string; onExitKind?: (kind: TuiExitKind) => void }) {
   const { exit } = useApp();
   const { status, projection, activeSession, send, abort, selectSession } = useSaberSession(wsUrl, { sessionId });
   const [input, setInput] = useState("");
@@ -62,6 +64,8 @@ export function App({ wsUrl, httpUrl, sessionId }: { wsUrl: string; httpUrl: str
   useInput((input_, key) => {
     if (pickerOpen) {
       if (key.escape) { setPickerOpen(false); return; }
+      // raw-mode Ctrl+C (0x03) arrives as input, not SIGINT — it QUITs
+      if (input_ === "\x03") { onExitKind?.("quit"); exit(); return; }
       if (key.upArrow) { setPickerIndex((i) => Math.max(0, i - 1)); return; }
       if (key.downArrow) { setPickerIndex((i) => Math.min(sessions.length - 1, i + 1)); return; }
       if (key.return) {
@@ -72,9 +76,11 @@ export function App({ wsUrl, httpUrl, sessionId }: { wsUrl: string; httpUrl: str
       }
       return; // swallow other keys while the picker is open
     }
+    // raw-mode Ctrl+C (0x03) arrives as input, not SIGINT — it QUITs
+    if (input_ === "\x03") { onExitKind?.("quit"); exit(); return; }
     // Esc always DETACHES: the turn keeps running server-side so another
     // frontend (browser) can take over the same session — never aborts it.
-    if (key.escape) exit();
+    if (key.escape) { onExitKind?.("detach"); exit(); }
     // Ctrl+A aborts the active turn explicitly
     if (key.ctrl && input_ === "a" && projection.isRunning) abort();
     // Tab opens the session switcher

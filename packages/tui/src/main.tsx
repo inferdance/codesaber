@@ -1,7 +1,7 @@
 import React from "react";
 import { render } from "ink";
 import * as path from "node:path";
-import { App } from "./App.js";
+import { App, type TuiExitKind } from "./App.js";
 
 function wsUrlFromHttp(http: string): string {
   const parsed = new URL(http);
@@ -127,28 +127,41 @@ KEYS:
     try {
       const health = await fetch(`${httpUrl}/api/health`, { signal: AbortSignal.timeout(1500) })
         .then((r) => r.json() as Promise<{ model?: string }>);
-      if (health.model && health.model !== modelFlag) {
-        console.error(`error: server at ${httpUrl} runs model ${health.model}, not ${modelFlag}; drop --model or target another server`);
+      const remoteModel = typeof health.model === "string" ? health.model : "";
+      if (remoteModel && remoteModel !== modelFlag) {
+        // remote-controlled string — sanitize before it reaches the terminal
+        const { sanitizeTerminalText } = await import("./sanitize.js");
+        console.error(`error: server at ${httpUrl} runs model ${sanitizeTerminalText(remoteModel)}, not ${modelFlag}; drop --model or target another server`);
         process.exit(1);
         return;
       }
     } catch { /* health unavailable — the WS connection surfaces errors */ }
   }
 
-  const instance = render(<App wsUrl={wsUrl} httpUrl={httpUrl} sessionId={sessionId} />);
+  let exitKind = "quit" as TuiExitKind;
+  const instance = render(
+    <App
+      wsUrl={wsUrl}
+      httpUrl={httpUrl}
+      sessionId={sessionId}
+      onExitKind={(kind) => { exitKind = kind; }}
+    />,
+  );
   await instance.waitUntilExit();
   if (ownsServer && closeOwnedServer) {
-    // spec detach semantics: a turn still running must survive for another
-    // frontend (browser / next `saber tui`) to take over; an idle embedded
-    // server closes with the TUI
-    try {
-      const sessions = await fetch(`${httpUrl}/api/sessions`, { signal: AbortSignal.timeout(1500) })
-        .then((r) => r.json() as Promise<Array<{ isRunning: boolean }>>);
-      if (sessions.some((s) => s.isRunning)) {
-        console.error(`[saber] turn still running — embedded server stays at ${httpUrl}; reopen with saber tui or a browser to take over]`);
-        return; // keep the process (and server) alive
-      }
-    } catch { /* fall through to close */ }
+    // detach (Esc) with a LIVE turn keeps the embedded server for another
+    // frontend to take over; WAL-derived isRunning can lie about crashed
+    // sessions, so ask the server for sessions it actually holds
+    if (exitKind === "detach") {
+      try {
+        const live = await fetch(`${httpUrl}/api/sessions/live`, { signal: AbortSignal.timeout(1500) })
+          .then((r) => r.json() as Promise<{ count: number }>);
+        if (live.count > 0) {
+          console.error(`[saber] turn still running — embedded server stays at ${httpUrl}; reopen with saber tui or a browser to take over]`);
+          return; // keep the process (and server) alive
+        }
+      } catch { /* endpoint miss (older server) or fetch failure — close */ }
+    }
     await closeOwnedServer();
   }
 }
