@@ -35,17 +35,20 @@ KEYS:
     process.exit(2);
   }
 
-  const http = flag("http") ?? "http://127.0.0.1:3080";
+  const explicitHttp = flag("http");
   let wsUrl: string;
   try {
-    wsUrl = flag("url") ?? wsUrlFromHttp(http);
+    wsUrl = flag("url") ?? wsUrlFromHttp(explicitHttp ?? "http://127.0.0.1:3080");
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(2);
     return;
   }
   const sessionId = flag("session");
+  // with only --url given, the REST session list must target the SAME server
+  // as the socket — derive the http origin from the ws url
+  const httpOrigin = (() => { const u = new URL(wsUrl); return `${u.protocol === "wss:" ? "https:" : "http:"}//${u.host}`; })();
 
-  const instance = render(<App wsUrl={wsUrl} httpUrl={http} sessionId={sessionId} />);
+  const instance = render(<App wsUrl={wsUrl} httpUrl={explicitHttp ?? httpOrigin} sessionId={sessionId} />);
   await instance.waitUntilExit();
 }

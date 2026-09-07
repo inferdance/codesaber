@@ -112,7 +112,7 @@ async function runResume(args: string[]): Promise<void> {
     else if (args[i] === "--timeout") timeoutSec = Number(args[++i]);
   }
   if (!sessionId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(sessionId)) {
-    console.error("error: resume requires a session id (saber exec list to see them)");
+    console.error("error: resume requires a session id (saber list to see them)");
     process.exit(2);
   }
   if (!prompt) { console.error("error: -p <prompt> required"); process.exit(2); }
@@ -129,56 +129,109 @@ async function runResume(args: string[]): Promise<void> {
   const dataDir = getDataDir();
   const logFile = path.join(dataDir, "sessions", `${sessionId}.jsonl`);
   if (!fs.existsSync(logFile)) {
-    console.error(`error: no such session: ${sessionId} (saber exec list)`);
+    console.error(`error: no such session: ${sessionId} (saber list)`);
     process.exit(1);
   }
 
-  const session = SessionLog.open(path.join(dataDir, "sessions"), sessionId);
-  const recovered = recoverSession(logFile);
-  if (recovered.tornAt !== undefined) {
-    session.close();
-    console.error(`error: session is corrupt at record ${recovered.tornAt}`);
-    process.exit(1);
-  }
-
-  const toolContext: ToolContext = {
-    sessionId, cwd, dataDir,
-    policy: createPathPolicy(cwd, dataDir),
-    readFiles: new Map(),
+  // single-writer guard: the server (or another saber process) may hold this
+  // session — a second writer duplicates WAL seqs and splits the mailbox
+  const lockFile = `${logFile}.lock`;
+  const lockHeld = (): boolean => {
+    try {
+      const raw = fs.readFileSync(lockFile, "utf-8").trim();
+      const pid = Number(raw.split(":")[0]);
+      if (Number.isInteger(pid) && pid > 0) {
+        try { process.kill(pid, 0); return true; } catch { /* stale lock */ }
+      }
+    } catch { /* no lock */ }
+    return false;
   };
-  const runTask = createTaskRunner({ provider, model: resolvedModel, cwd, dataDir });
-  const tools = createTools(toolContext, { runTask });
-
-  const engine = new Engine({
-    provider, tools, session, toolContext,
-    model: resolvedModel,
-    onEvent: jsonMode ? (e) => console.log(JSON.stringify(e)) : undefined,
-  });
-  const restored = engine.restoreHistory(recovered.events.map((e) => e.payload));
-  if (!restored.ok) {
-    session.close();
-    console.error(`error: ${restored.error}`);
+  if (lockHeld()) {
+    console.error(`error: session ${sessionId} is held by a live process (see ${lockFile}); stop it first or resume via the server`);
     process.exit(1);
   }
-
-  const effectiveTimeout = timeoutSec ?? 600;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), effectiveTimeout * 1000);
-  pipeClosed.abort = () => controller.abort();
+  fs.writeFileSync(lockFile, `${process.pid}:${Date.now()}`, { mode: 0o600 });
 
   let exitCode = 1;
+  const session = SessionLog.open(path.join(dataDir, "sessions"), sessionId);
   try {
-    const { answer, outcome } = await engine.runTurn({ userMessage: prompt, system: systemPrompt(cwd), signal: controller.signal });
-    if (!jsonMode && answer) console.log(answer);
-    exitCode = outcome.kind === "done" ? 0 : outcome.kind === "aborted" && !pipeClosed.epipe ? 124 : 1;
+    const recovered = recoverSession(logFile);
+    if (recovered.tornAt !== undefined) {
+      console.error(`error: session is corrupt at record ${recovered.tornAt}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    // WAL crash-window parity with the server: unfinished calls get persisted
+    // "result unknown" results (fsync) BEFORE the fold — never re-executed
+    {
+      const pendingCalls: Array<{ callId: string; name: string }> = [];
+      for (const event of recovered.events) {
+        const payload = event.payload;
+        if (payload.type === "tool_call") pendingCalls.push({ callId: payload.callId, name: payload.name });
+        else if (payload.type === "tool_result") {
+          const index = pendingCalls.findIndex((c) => c.callId === payload.callId);
+          if (index >= 0) pendingCalls.splice(index, 1);
+        }
+      }
+      for (const call of pendingCalls) {
+        session.record({
+          type: "tool_result",
+          callId: call.callId,
+          name: call.name,
+          content: "result unknown: the session ended before this call produced a result (not re-executed)",
+          isError: true,
+        }, { sync: true });
+      }
+      if (pendingCalls.length > 0) recovered.events = recoverSession(logFile).events;
+    }
+
+    const toolContext: ToolContext = {
+      sessionId, cwd, dataDir,
+      policy: createPathPolicy(cwd, dataDir),
+      readFiles: new Map(),
+    };
+    const runTask = createTaskRunner({ provider, model: resolvedModel, cwd, dataDir });
+    const tools = createTools(toolContext, { runTask });
+
+    const compactTokens = Number(process.env.SABER_COMPACT_TOKENS ?? "100000");
+    const engine = new Engine({
+      provider, tools, session, toolContext,
+      model: resolvedModel,
+      onEvent: jsonMode ? (e) => console.log(JSON.stringify(e)) : undefined,
+      ...(Number.isInteger(compactTokens) && compactTokens > 0 ? { compact: { thresholdTokens: compactTokens } } : {}),
+    });
+    const restored = engine.restoreHistory(recovered.events.map((e) => e.payload));
+    if (!restored.ok) {
+      console.error(`error: ${restored.error}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const effectiveTimeout = timeoutSec ?? 600;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), effectiveTimeout * 1000);
+    pipeClosed.abort = () => controller.abort();
+
+    exitCode = 1;
+    try {
+      const { answer, outcome } = await engine.runTurn({ userMessage: prompt, system: systemPrompt(cwd), signal: controller.signal });
+      if (!jsonMode && answer) console.log(answer);
+      // EPIPE-aborted runs exit 0 like exec (the consumer closed the pipe)
+      exitCode = outcome.kind === "done" ? 0 : outcome.kind === "aborted" ? (pipeClosed.epipe ? 0 : 124) : 1;
+    } finally {
+      pipeClosed.abort = null;
+      pipeClosed.epipe = false;
+      clearTimeout(timer);
+      session.close();
+      const usage = engine.getUsage();
+      const priced = usage.cost_usd > 0 ? `$${usage.cost_usd.toFixed(4)}` : "unknown (unpriced model)";
+      console.error(`[session ${sessionId} · tokens: in=${usage.input_tokens} out=${usage.output_tokens} cost=${priced}]`);
+    }
+    // NOTE: no process.exit here — it terminates immediately and would skip
+    // the lock-releasing finally below
   } finally {
-    pipeClosed.abort = null;
-    pipeClosed.epipe = false;
-    clearTimeout(timer);
-    session.close();
-    const usage = engine.getUsage();
-    const priced = usage.cost_usd > 0 ? `$${usage.cost_usd.toFixed(4)}` : "unknown (unpriced model)";
-    console.error(`[session ${sessionId} · tokens: in=${usage.input_tokens} out=${usage.output_tokens} cost=${priced}]`);
+    try { fs.rmSync(lockFile, { force: true }); } catch { /* best effort */ }
   }
   process.exit(exitCode);
 }
@@ -190,8 +243,7 @@ function runList(): void {
     .filter((f) => f.endsWith(".jsonl"))
     .map((f) => f.slice(0, -".jsonl".length))
     .filter((id) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id))
-    .sort()
-    .reverse()
+    .sort((a, b) => fs.statSync(path.join(sessionsDir, `${b}.jsonl`)).mtimeMs - fs.statSync(path.join(sessionsDir, `${a}.jsonl`)).mtimeMs)
     .slice(0, 30)
     .map((id) => {
       try {

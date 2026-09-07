@@ -50,6 +50,8 @@ export function App({ wsUrl, httpUrl, sessionId }: { wsUrl: string; httpUrl: str
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [pickerIndex, setPickerIndex] = useState(0);
 
+  // keep the selected row inside the visible 10-row window
+  const pickerWindowStart = Math.max(0, Math.min(pickerIndex - 5, Math.max(0, sessions.length - 10)));
   const refreshSessions = useCallback((): void => {
     fetch(`${httpUrl}/api/sessions`)
       .then((r) => (r.ok ? r.json() : []))
@@ -99,7 +101,9 @@ export function App({ wsUrl, httpUrl, sessionId }: { wsUrl: string; httpUrl: str
 
   return (
     <Box flexDirection="column">
-      <Static items={settled}>
+      {/* keyed by session: ink Static never reprints already-rendered items,
+          so switching sessions must remount it or cached history is skipped */}
+      <Static key={activeSession} items={settled}>
         {(message) => <MessageRow key={message.timestamp} message={message} />}
       </Static>
       {streaming ? <MessageRow message={streaming} /> : null}
@@ -109,14 +113,17 @@ export function App({ wsUrl, httpUrl, sessionId }: { wsUrl: string; httpUrl: str
           <Text dimColor>sessions (↑↓ select · enter switch · esc close)</Text>
           {sessions.length === 0
             ? <Text dimColor>(none — is the server running?)</Text>
-            : sessions.slice(0, 10).map((session, index) => (
-                <Text key={session.id} color={index === pickerIndex ? "cyan" : undefined}>
-                  {index === pickerIndex ? "❯ " : "  "}
-                  {session.isRunning ? "● " : "  "}
-                  {sanitizeTerminalText(session.title).slice(0, 60)}
-                  {session.id === activeSession ? " (current)" : ""}
-                </Text>
-              ))}
+            : sessions.slice(pickerWindowStart, pickerWindowStart + 10).map((session, windowOffset) => {
+                const index = pickerWindowStart + windowOffset;
+                return (
+                  <Text key={session.id} color={index === pickerIndex ? "cyan" : undefined}>
+                    {index === pickerIndex ? "❯ " : "  "}
+                    {session.isRunning ? "● " : "  "}
+                    {sanitizeTerminalText(session.title).slice(0, 60)}
+                    {session.id === activeSession ? " (current)" : ""}
+                  </Text>
+                );
+              })}
         </Box>
       ) : null}
 
