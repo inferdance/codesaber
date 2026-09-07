@@ -50,13 +50,26 @@ for (const task of tasks) {
   const started = Date.now();
   const reasons: string[] = [];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `saber-eval-${task.id}-`));
-  if (!task.workspace) {
-    // seed the eval workspace with the task file's siblings (fixtures)
-    const fixtureDir = path.dirname(path.resolve(taskFile));
-    for (const entry of fs.readdirSync(fixtureDir)) {
-      if (entry.endsWith(".jsonl") || entry.startsWith(".")) continue;
-      fs.copyFileSync(path.join(fixtureDir, entry), path.join(dir, entry));
-    }
+  try {
+    // every task runs in a copy — never in the source fixture/workspace dir
+    const copyRecursive = (from: string, to: string): void => {
+      fs.mkdirSync(to, { recursive: true });
+      for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+        if (entry.name.endsWith(".jsonl") || entry.name.startsWith(".")) continue;
+        const srcPath = path.join(from, entry.name);
+        const dstPath = path.join(to, entry.name);
+        if (entry.isDirectory()) copyRecursive(srcPath, dstPath);
+        else fs.copyFileSync(srcPath, dstPath);
+      }
+    };
+    const source = task.workspace
+      ?? path.dirname(path.resolve(taskFile)); // fixtures live next to the tasks file
+    copyRecursive(source, dir);
+  } catch (e) {
+    console.error(`fixture copy failed for ${task.id}: ${e instanceof Error ? e.message : String(e)}`);
+    results.push({ id: task.id, pass: false, answer: "", exitCode: null, reasons: ["fixture-copy-failed"], durationMs: Date.now() - started });
+    fs.rmSync(dir, { recursive: true, force: true });
+    continue;
   }
   try {
     const timeoutSec = task.timeout_sec ?? 600;
@@ -66,7 +79,7 @@ for (const task of tasks) {
       ...(modelFlag ? ["--model", modelFlag] : []),
       "--timeout", String(timeoutSec),
     ], {
-      cwd: task.workspace ?? dir,
+      cwd: dir,
       reject: false,
       timeout: timeoutSec * 1000 + 30_000,
     });

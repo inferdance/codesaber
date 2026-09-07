@@ -388,7 +388,7 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
           if (!(await isIsolatedVmAvailable())) {
             return { content: "SABER_CODE=isolate but isolated-vm is unavailable on this platform; isolation was explicitly requested, not falling back", isError: true };
           }
-          const stripped = stripErasableTs(args.code);
+          const stripped = await stripErasableTs(args.code);
           if (stripped === null) {
             return { content: "code transform failed (erasable TypeScript only — no enums/namespaces)", isError: true };
           }
@@ -396,6 +396,16 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
           const onParentAbort = (): void => abortGuard.abort();
           tctx.signal?.addEventListener("abort", onParentAbort, { once: true });
           const bridge = makeToolBridge(usable, { ...tctx, signal: abortGuard.signal });
+          // the run signal composes the parent abort AND the run's wall clock:
+          // an isolate deadline kills the guest instantly, this cancels the
+          // HOST side of any in-flight sub-call (bash groups, writes)
+          const runSignal = AbortSignal.any([
+            abortGuard.signal,
+            AbortSignal.timeout(args.timeout_ms ?? 120_000),
+          ]);
+          const onRunAbort = (): void => abortGuard.abort();
+          if (runSignal.aborted) onRunAbort();
+          else runSignal.addEventListener("abort", onRunAbort, { once: true });
           try {
             return await runCodeIsolated(
               { code: stripped, timeoutMs: args.timeout_ms ?? 120_000 },
@@ -403,6 +413,11 @@ export function createTools(ctx: ToolContext, extensions?: ToolExtensions): Tool
             );
           } finally {
             tctx.signal?.removeEventListener("abort", onParentAbort);
+            runSignal.removeEventListener("abort", onRunAbort);
+            // bounded drain: cancelled sub-calls settle (bash honors the
+            // signal and dies fast); a stuck one cannot hold the turn
+            const drained = bridge.drain(10_000);
+            await drained;
           }
         }
         const { runCode } = await import("./code.js");

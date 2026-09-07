@@ -111,6 +111,10 @@ export async function runCodeIsolated(
 
   // guest-side bootstrap: tools proxy over the host bridge
   const bootstrap = `
+    const __render = (v) =>
+      v === undefined ? "(no return value)" :
+      typeof v === "string" ? v :
+      (() => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } })();
     globalThis.tools = new Proxy({}, {
       get: (_t, name) => {
         if (typeof name !== "string") return undefined;
@@ -130,7 +134,7 @@ export async function runCodeIsolated(
   context.evalSync(bootstrap);
 
   // the program: compiled sync-first for syntax errors, then run async
-  const wrapped = `(async () => { ${options.code}\n })()`;
+  const wrapped = `(async () => { ${options.code}\n })().then(__render)`;
   let script: IvmScript;
   try {
     script = await isolate.compileScript(wrapped);
@@ -140,12 +144,16 @@ export async function runCodeIsolated(
   }
 
   // wall clock: dispose the isolate when the deadline passes — an uncooperative
-  // program (busy loop, deep await) cannot outlive it
+  // program (busy loop, deep await) cannot outlive it; in-flight HOST
+  // sub-calls observe the run signal (passed by the caller) and cancel
   let timedOut = false;
-  const timer = setTimeout(() => {
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs);
+  const onDeadline = (): void => {
     timedOut = true;
     try { isolate.dispose(); } catch { /* already gone */ }
-  }, options.timeoutMs);
+  };
+  if (timeoutSignal.aborted) onDeadline();
+  else timeoutSignal.addEventListener("abort", onDeadline, { once: true });
 
   try {
     const value = await script.run(context, { promise: true });
@@ -157,7 +165,7 @@ export async function runCodeIsolated(
     }
     return { content: String((e as Error)?.stack ?? e).slice(0, 20_000), isError: true };
   } finally {
-    clearTimeout(timer);
+    timeoutSignal.removeEventListener("abort", onDeadline);
     try { isolate.dispose(); } catch { /* already disposed */ }
   }
 }

@@ -13,6 +13,7 @@
  * enums/namespaces/parameter properties are rejected by the stripper.
  */
 
+import { randomUUID } from "node:crypto";
 import type { ToolContext, ToolDefinition, ToolResult } from "../types.js";
 import { truncateMiddle } from "./index.js";
 
@@ -118,12 +119,16 @@ export function stripErasableTs(code: string): string | null {
  */
 export function makeToolBridge(tools: ToolDefinition[], ctx: ToolContext): {
   dispatch: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
+  drain: (capMs: number) => Promise<void>;
 } {
   let queue: Promise<void> = Promise.resolve();
   let counter = 0;
+  // per-run prefix: two runs' first write must not both be `rc-1-write`,
+  // or WAL recovery shadows the second run's unfinished intent
+  const prefix = `rc-${randomUUID().slice(0, 8)}`;
 
   const dispatch = (name: string, args: Record<string, unknown>): Promise<ToolResult> => {
-    const id = `rc-${++counter}-${name}`;
+    const id = `${prefix}-${++counter}-${name}`;
     return new Promise<ToolResult>((resolve) => {
       queue = queue.then(async () => {
         const tool = tools.find((t) => t.name === name) ?? null;
@@ -151,7 +156,12 @@ export function makeToolBridge(tools: ToolDefinition[], ctx: ToolContext): {
     });
   };
 
-  return { dispatch };
+  /** Resolves when every dispatched sub-call has settled, or after `capMs`
+   *  (non-cooperative tools must not hold the turn hostage). */
+  const drain = (capMs: number): Promise<void> =>
+    Promise.race([queue.then(() => undefined, () => undefined), new Promise<void>((r) => setTimeout(r, capMs))]);
+
+  return { dispatch, drain };
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -192,7 +202,7 @@ export async function runCode(
       import("node:crypto"),
     ]);
 
-    const javascript = stripErasableTs(options.code);
+    const javascript = await stripErasableTs(options.code);
     if (javascript === null) {
       return { content: "code transform failed (erasable TypeScript only — no enums/namespaces)", isError: true };
     }
