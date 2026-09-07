@@ -25,8 +25,8 @@ DEFAULTS:
   http http://127.0.0.1:3080 (ws derived as <http>/ws)
 
 KEYS:
-  Enter send / steer · Ctrl+A abort running turn · Esc detach (turn keeps
-  running server-side; reopen the session from another frontend) · Ctrl+C quit`);
+  Enter send / steer · Tab session switcher · Ctrl+A abort running turn ·
+  Esc detach (turn keeps running server-side) / close picker · Ctrl+C quit`);
     return;
   }
 
@@ -46,6 +46,6 @@ KEYS:
   }
   const sessionId = flag("session");
 
-  const instance = render(<App wsUrl={wsUrl} sessionId={sessionId} />);
+  const instance = render(<App wsUrl={wsUrl} httpUrl={http} sessionId={sessionId} />);
   await instance.waitUntilExit();
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { Engine, SessionLog, createPathPolicy, createTaskRunner, createTools, type ToolContext } from "@saber/core";
+import { Engine, SessionLog, createPathPolicy, createTaskRunner, createTools, recoverSession, type ToolContext } from "@saber/core";
 import { buildProvider, getApiKey, getDataDir, systemPrompt, validatedBaseUrl, type Auth } from "./runtime.js";
 import * as path from "node:path";
+import * as fs from "node:fs";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -98,6 +99,116 @@ async function runExec(args: string[]): Promise<void> {
   process.exit(exitCode);
 }
 
+async function runResume(args: string[]): Promise<void> {
+  const sessionId = args[1];
+  let prompt = "";
+  let jsonMode = false;
+  let model: string | undefined;
+  let timeoutSec: number | undefined;
+  for (let i = 2; i < args.length; i++) {
+    if (args[i] === "-p" || args[i] === "--prompt") prompt = args[++i] ?? "";
+    else if (args[i] === "--json") jsonMode = true;
+    else if (args[i] === "--model") model = args[++i];
+    else if (args[i] === "--timeout") timeoutSec = Number(args[++i]);
+  }
+  if (!sessionId || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(sessionId)) {
+    console.error("error: resume requires a session id (saber exec list to see them)");
+    process.exit(2);
+  }
+  if (!prompt) { console.error("error: -p <prompt> required"); process.exit(2); }
+  if (timeoutSec !== undefined && (!Number.isInteger(timeoutSec) || timeoutSec < 1)) {
+    console.error("error: --timeout must be a positive integer (seconds)"); process.exit(2);
+  }
+
+  const auth = requireAuth();
+  const baseUrl = validatedBaseUrl();
+  const { provider, defaultModel } = buildProvider(auth, baseUrl);
+  const resolvedModel = model ?? defaultModel;
+
+  const cwd = process.cwd();
+  const dataDir = getDataDir();
+  const logFile = path.join(dataDir, "sessions", `${sessionId}.jsonl`);
+  if (!fs.existsSync(logFile)) {
+    console.error(`error: no such session: ${sessionId} (saber exec list)`);
+    process.exit(1);
+  }
+
+  const session = SessionLog.open(path.join(dataDir, "sessions"), sessionId);
+  const recovered = recoverSession(logFile);
+  if (recovered.tornAt !== undefined) {
+    session.close();
+    console.error(`error: session is corrupt at record ${recovered.tornAt}`);
+    process.exit(1);
+  }
+
+  const toolContext: ToolContext = {
+    sessionId, cwd, dataDir,
+    policy: createPathPolicy(cwd, dataDir),
+    readFiles: new Map(),
+  };
+  const runTask = createTaskRunner({ provider, model: resolvedModel, cwd, dataDir });
+  const tools = createTools(toolContext, { runTask });
+
+  const engine = new Engine({
+    provider, tools, session, toolContext,
+    model: resolvedModel,
+    onEvent: jsonMode ? (e) => console.log(JSON.stringify(e)) : undefined,
+  });
+  const restored = engine.restoreHistory(recovered.events.map((e) => e.payload));
+  if (!restored.ok) {
+    session.close();
+    console.error(`error: ${restored.error}`);
+    process.exit(1);
+  }
+
+  const effectiveTimeout = timeoutSec ?? 600;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), effectiveTimeout * 1000);
+  pipeClosed.abort = () => controller.abort();
+
+  let exitCode = 1;
+  try {
+    const { answer, outcome } = await engine.runTurn({ userMessage: prompt, system: systemPrompt(cwd), signal: controller.signal });
+    if (!jsonMode && answer) console.log(answer);
+    exitCode = outcome.kind === "done" ? 0 : outcome.kind === "aborted" && !pipeClosed.epipe ? 124 : 1;
+  } finally {
+    pipeClosed.abort = null;
+    pipeClosed.epipe = false;
+    clearTimeout(timer);
+    session.close();
+    const usage = engine.getUsage();
+    const priced = usage.cost_usd > 0 ? `$${usage.cost_usd.toFixed(4)}` : "unknown (unpriced model)";
+    console.error(`[session ${sessionId} · tokens: in=${usage.input_tokens} out=${usage.output_tokens} cost=${priced}]`);
+  }
+  process.exit(exitCode);
+}
+
+function runList(): void {
+  const sessionsDir = path.join(getDataDir(), "sessions");
+  if (!fs.existsSync(sessionsDir)) { console.log("(no sessions)"); return; }
+  const rows = fs.readdirSync(sessionsDir)
+    .filter((f) => f.endsWith(".jsonl"))
+    .map((f) => f.slice(0, -".jsonl".length))
+    .filter((id) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id))
+    .sort()
+    .reverse()
+    .slice(0, 30)
+    .map((id) => {
+      try {
+        const events = recoverSession(path.join(sessionsDir, `${id}.jsonl`)).events;
+        let title = "";
+        for (const e of events) {
+          if (e.payload.type === "user_message") {
+            title = e.payload.message.blocks.filter((b) => b.type === "text").map((b) => b.text).join("").slice(0, 60);
+            break;
+          }
+        }
+        return `${id}  ${title}`;
+      } catch { return id; }
+    });
+  console.log(rows.length > 0 ? rows.join("\n") : "(no sessions)");
+}
+
 async function runServer(args: string[]): Promise<void> {
   let port = 3080;
   let model: string | undefined;
@@ -153,6 +264,8 @@ function help(): void {
 
 USAGE:
   saber exec -p <prompt> [--json] [--model <model>] [--timeout <seconds>, default 600]
+  saber resume <session-id> -p <prompt> [--json] [--model <model>] [--timeout <seconds>]
+  saber list                     # recent sessions
   saber server [--port <port>] [--model <model>]
   saber tui [--http <url>] [--session <id>]
   saber doctor
@@ -164,6 +277,8 @@ EXIT CODES (exec):
 
 switch (command) {
   case "exec": runExec(args).catch((e) => { console.error(e); process.exit(1); }); break;
+  case "resume": runResume(args).catch((e) => { console.error(e); process.exit(1); }); break;
+  case "list": runList(); break;
   case "server": runServer(args).catch((e) => { console.error(e); process.exit(1); }); break;
   case "tui": {
     const { runTui } = await import("@saber/tui");

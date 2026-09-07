@@ -14,5 +14,14 @@
   "devDependencies": {
     "tsx": "^4.0.0",
     "typescript": "^5.7.0"
-  }
+  },
+  "description": "saber — a coding agent: one engine, three frontends (web / TUI / headless)",
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/inferdance/codesaber.git"
+  },
+  "license": "Apache-2.0"
 }

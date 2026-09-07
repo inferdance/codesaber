@@ -50,8 +50,10 @@ Three frontends, one engine:
 
 ```bash
 pnpm saber server --port 3080    # web UI at http://127.0.0.1:3080
-pnpm saber tui                   # terminal UI against a running server
+pnpm saber tui                   # terminal UI against a running server (Tab = session switcher)
 pnpm saber exec -p "..."         # headless
+pnpm saber list                  # recent sessions
+pnpm saber exec resume <id> -p "..."   # continue a session
 ```
 
 Frontend capabilities (M2): context auto-compaction at the turn boundary

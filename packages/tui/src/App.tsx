@@ -1,9 +1,15 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Box, Static, Text, useInput, useApp } from "ink";
 import TextInput from "ink-text-input";
 import { useSaberSession } from "@saber/ui-shared/hook";
 import type { MessageView } from "@saber/ui-shared";
 import { sanitizeTerminalText } from "./sanitize.js";
+
+interface SessionSummary {
+  id: string;
+  title: string;
+  isRunning: boolean;
+}
 
 function MessageRow({ message }: { message: MessageView }) {
   switch (message.role) {
@@ -36,17 +42,45 @@ function MessageRow({ message }: { message: MessageView }) {
   }
 }
 
-export function App({ wsUrl, sessionId }: { wsUrl: string; sessionId?: string }) {
+export function App({ wsUrl, httpUrl, sessionId }: { wsUrl: string; httpUrl: string; sessionId?: string }) {
   const { exit } = useApp();
-  const { status, projection, activeSession, send, abort } = useSaberSession(wsUrl, { sessionId });
+  const { status, projection, activeSession, send, abort, selectSession } = useSaberSession(wsUrl, { sessionId });
   const [input, setInput] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [pickerIndex, setPickerIndex] = useState(0);
+
+  const refreshSessions = useCallback((): void => {
+    fetch(`${httpUrl}/api/sessions`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: SessionSummary[]) => setSessions(list))
+      .catch(() => setSessions([]));
+  }, [httpUrl]);
 
   useInput((input_, key) => {
+    if (pickerOpen) {
+      if (key.escape) { setPickerOpen(false); return; }
+      if (key.upArrow) { setPickerIndex((i) => Math.max(0, i - 1)); return; }
+      if (key.downArrow) { setPickerIndex((i) => Math.min(sessions.length - 1, i + 1)); return; }
+      if (key.return) {
+        const chosen = sessions[pickerIndex];
+        if (chosen) selectSession(chosen.id);
+        setPickerOpen(false);
+        return;
+      }
+      return; // swallow other keys while the picker is open
+    }
     // Esc always DETACHES: the turn keeps running server-side so another
     // frontend (browser) can take over the same session — never aborts it.
     if (key.escape) exit();
     // Ctrl+A aborts the active turn explicitly
     if (key.ctrl && input_ === "a" && projection.isRunning) abort();
+    // Tab opens the session switcher
+    if (key.tab) {
+      setPickerIndex(0);
+      setPickerOpen(true);
+      refreshSessions();
+    }
   });
 
   useEffect(() => {
@@ -54,6 +88,7 @@ export function App({ wsUrl, sessionId }: { wsUrl: string; sessionId?: string })
   }, [status]);
 
   const submit = (value: string): void => {
+    if (pickerOpen) return; // Enter selects in the picker, never submits
     const ok = send(value);
     if (ok) setInput("");
   };
@@ -69,17 +104,34 @@ export function App({ wsUrl, sessionId }: { wsUrl: string; sessionId?: string })
       </Static>
       {streaming ? <MessageRow message={streaming} /> : null}
 
+      {pickerOpen ? (
+        <Box borderStyle="round" flexDirection="column" paddingX={1}>
+          <Text dimColor>sessions (↑↓ select · enter switch · esc close)</Text>
+          {sessions.length === 0
+            ? <Text dimColor>(none — is the server running?)</Text>
+            : sessions.slice(0, 10).map((session, index) => (
+                <Text key={session.id} color={index === pickerIndex ? "cyan" : undefined}>
+                  {index === pickerIndex ? "❯ " : "  "}
+                  {session.isRunning ? "● " : "  "}
+                  {sanitizeTerminalText(session.title).slice(0, 60)}
+                  {session.id === activeSession ? " (current)" : ""}
+                </Text>
+              ))}
+        </Box>
+      ) : null}
+
       <Box borderStyle="round" flexDirection="column" paddingX={1}>
         <Text dimColor>
           {status === "connected" ? "●" : status === "connecting" ? "○" : "✕"} {status}
           {" · "}{activeSession || "new session"}
           {projection.isRunning ? " · ctrl+a abort" : ""}
-          {" · esc detach"}
+          {" · tab sessions · esc detach"}
         </Text>
         <TextInput
           value={input}
           onChange={setInput}
           onSubmit={submit}
+          focus={!pickerOpen}
           placeholder={status === "connected"
             ? (projection.isRunning ? "steer the running turn…" : "ask saber anything…")
             : "connecting…"}
