@@ -69,10 +69,18 @@ KEYS:
   // there (shared sessions), otherwise boot an embedded in-process server
   // so `saber tui` is a single zero-ceremony command
   const explicitTarget = flag("url") !== undefined || explicitHttp !== undefined;
-  let cleanup: (() => Promise<void>) | null = null;
+  let ownsServer = false;
+  let closeOwnedServer: (() => Promise<void>) | null = null;
   if (!explicitTarget && !(await isAlive(httpUrl))) {
     const { createProviderFromEnv } = await import("@saber/ai");
-    const fromEnv = createProviderFromEnv();
+    let fromEnv;
+    try {
+      fromEnv = createProviderFromEnv();
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exit(2);
+      return;
+    }
     if (!fromEnv) {
       console.error("error: set ANTHROPIC_API_KEY or OPENAI_API_KEY (or start `saber server` first)");
       process.exit(1);
@@ -104,14 +112,43 @@ KEYS:
     const address = await server.listen();
     httpUrl = address;
     wsUrl = `${address.replace("http", "ws")}/ws`;
-    // the embedded server's lifetime is the TUI's lifetime
-    cleanup = () => server.close();
+    ownsServer = true;
+    closeOwnedServer = () => server.close();
+    // SIGTERM/SIGINT must run the ASYNC cleanup (abort turns, close logs) —
+    // the default handler exits immediately and leaks detached tool processes
+    const shutdown = (): void => {
+      void server.close().finally(() => process.exit(0));
+    };
+    process.on("SIGTERM", shutdown);
+    process.on("SIGINT", shutdown);
+  } else if (modelFlag) {
+    // reusing a live server: surface a model mismatch instead of silently
+    // running a different model than the command line asked for
+    try {
+      const health = await fetch(`${httpUrl}/api/health`, { signal: AbortSignal.timeout(1500) })
+        .then((r) => r.json() as Promise<{ model?: string }>);
+      if (health.model && health.model !== modelFlag) {
+        console.error(`error: server at ${httpUrl} runs model ${health.model}, not ${modelFlag}; drop --model or target another server`);
+        process.exit(1);
+        return;
+      }
+    } catch { /* health unavailable — the WS connection surfaces errors */ }
   }
 
   const instance = render(<App wsUrl={wsUrl} httpUrl={httpUrl} sessionId={sessionId} />);
-  try {
-    await instance.waitUntilExit();
-  } finally {
-    if (cleanup) await cleanup();
+  await instance.waitUntilExit();
+  if (ownsServer && closeOwnedServer) {
+    // spec detach semantics: a turn still running must survive for another
+    // frontend (browser / next `saber tui`) to take over; an idle embedded
+    // server closes with the TUI
+    try {
+      const sessions = await fetch(`${httpUrl}/api/sessions`, { signal: AbortSignal.timeout(1500) })
+        .then((r) => r.json() as Promise<Array<{ isRunning: boolean }>>);
+      if (sessions.some((s) => s.isRunning)) {
+        console.error(`[saber] turn still running — embedded server stays at ${httpUrl}; reopen with saber tui or a browser to take over]`);
+        return; // keep the process (and server) alive
+      }
+    } catch { /* fall through to close */ }
+    await closeOwnedServer();
   }
 }
