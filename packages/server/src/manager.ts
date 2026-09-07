@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Provider } from "@saber/ai";
@@ -224,12 +225,37 @@ export class AgentServer {
     }
     // let aborted turns finish writing their turn_complete before closing fds
     await Promise.allSettled([...this.handles.values()].map((h) => h.drainPromise ?? Promise.resolve()));
-    for (const handle of this.handles.values()) handle.session.close();
+    for (const handle of this.handles.values()) {
+      handle.session.close();
+      try { fs.rmSync(path.join(this.sessionsDir, `${handle.id}.jsonl.lock`), { force: true }); } catch { /* best effort */ }
+    }
     this.handles.clear();
   }
 
   private createHandle(sessionId: string): SessionHandle {
     const file = path.join(this.sessionsDir, `${sessionId}.jsonl`);
+    // take the single-writer lock BEFORE opening the log so resume/exec
+    // see this server as the live owner and refuse to double-write
+    const lockFile = `${file}.lock`;
+    const processStartTime = (pid: number): string | null => {
+      try {
+        return execSync(`ps -o lstart= -p ${pid}`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+      } catch { return null; }
+    };
+    if (fs.existsSync(lockFile)) {
+      try {
+        const [pidRaw, startedAt] = fs.readFileSync(lockFile, "utf-8").trim().split(":");
+        const pid = Number(pidRaw);
+        const current = Number.isInteger(pid) && pid > 0 ? processStartTime(pid) : null;
+        if (current !== null && startedAt === current) {
+          throw new Error(`session ${sessionId} is held by another live writer (pid ${pid}); refusing`);
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("held by another live writer")) throw e;
+        /* unreadable lock: overwrite below */
+      }
+    }
+    fs.writeFileSync(lockFile, `${process.pid}:${processStartTime(process.pid) ?? ""}`, { mode: 0o600 });
     const session = fs.existsSync(file)
       ? SessionLog.open(this.sessionsDir, sessionId) // server restart: append, never truncate
       : SessionLog.create(this.sessionsDir, sessionId, {

@@ -3,6 +3,7 @@ import { Engine, SessionLog, createPathPolicy, createTaskRunner, createTools, re
 import { buildProvider, getApiKey, getDataDir, systemPrompt, validatedBaseUrl, type Auth } from "./runtime.js";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { execSync } from "node:child_process";
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -136,12 +137,27 @@ async function runResume(args: string[]): Promise<void> {
   // single-writer guard: the server (or another saber process) may hold this
   // session — a second writer duplicates WAL seqs and splits the mailbox
   const lockFile = `${logFile}.lock`;
+  // pid liveness alone lies after PID reuse; the boot-time-relative start
+  // clock of the process (field 22 in /proc,starttime on macOS ps) makes
+  // the identity unique for this machine boot
+  const processStartTime = (pid: number): string | null => {
+    try {
+      return execSync(`ps -o lstart= -p ${pid}`, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+    } catch { return null; }
+  };
   const lockHeld = (): boolean => {
     try {
       const raw = fs.readFileSync(lockFile, "utf-8").trim();
-      const pid = Number(raw.split(":")[0]);
+      // lstart itself contains colons (HH:MM:SS) — split on the FIRST only
+      const sep = raw.indexOf(":");
+      const pidRaw = raw.slice(0, sep);
+      const startedAt = raw.slice(sep + 1);
+      const pid = Number(pidRaw);
       if (Number.isInteger(pid) && pid > 0) {
-        try { process.kill(pid, 0); return true; } catch { /* stale lock */ }
+        const current = processStartTime(pid);
+        // lock matches its owner's identity only if the SAME process is
+        // still running (start time unchanged); otherwise the lock is stale
+        return current !== null && startedAt === current;
       }
     } catch { /* no lock */ }
     return false;
@@ -150,7 +166,8 @@ async function runResume(args: string[]): Promise<void> {
     console.error(`error: session ${sessionId} is held by a live process (see ${lockFile}); stop it first or resume via the server`);
     process.exit(1);
   }
-  fs.writeFileSync(lockFile, `${process.pid}:${Date.now()}`, { mode: 0o600 });
+  const myStart = processStartTime(process.pid) ?? "";
+  fs.writeFileSync(lockFile, `${process.pid}:${myStart}`, { mode: 0o600 });
 
   let exitCode = 1;
   const session = SessionLog.open(path.join(dataDir, "sessions"), sessionId);
@@ -243,8 +260,17 @@ function runList(): void {
     .filter((f) => f.endsWith(".jsonl"))
     .map((f) => f.slice(0, -".jsonl".length))
     .filter((id) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id))
-    .sort((a, b) => fs.statSync(path.join(sessionsDir, `${b}.jsonl`)).mtimeMs - fs.statSync(path.join(sessionsDir, `${a}.jsonl`)).mtimeMs)
+    // stat each file defensively: one broken symlink / deleted entry must
+    // not take down the whole listing
+    .map((id) => {
+      try {
+        return { id, mtime: fs.statSync(path.join(sessionsDir, `${id}.jsonl`)).mtimeMs };
+      } catch { return null; }
+    })
+    .filter((entry): entry is { id: string; mtime: number } => entry !== null)
+    .sort((a, b) => b.mtime - a.mtime)
     .slice(0, 30)
+    .map(({ id }) => id)
     .map((id) => {
       try {
         const events = recoverSession(path.join(sessionsDir, `${id}.jsonl`)).events;
