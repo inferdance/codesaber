@@ -147,13 +147,16 @@ export async function runCodeIsolated(
   // program (busy loop, deep await) cannot outlive it; in-flight HOST
   // sub-calls observe the run signal (passed by the caller) and cancel
   let timedOut = false;
-  const timeoutSignal = AbortSignal.timeout(options.timeoutMs);
-  const onDeadline = (): void => {
+  // a REFERENCE-HELD timer, not AbortSignal.timeout(): the latter keeps no
+  // handle alive, so an idle host process could exit before the deadline
+  // fires — losing the tool's terminal state entirely
+  let deadline: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    deadline = null;
     timedOut = true;
     try { isolate.dispose(); } catch { /* already gone */ }
-  };
-  if (timeoutSignal.aborted) onDeadline();
-  else timeoutSignal.addEventListener("abort", onDeadline, { once: true });
+  }, options.timeoutMs);
+  // prevent the timer itself from holding the process open on clean exits
+  if (deadline.unref) deadline.unref();
 
   try {
     const value = await script.run(context, { promise: true });
@@ -165,7 +168,7 @@ export async function runCodeIsolated(
     }
     return { content: String((e as Error)?.stack ?? e).slice(0, 20_000), isError: true };
   } finally {
-    timeoutSignal.removeEventListener("abort", onDeadline);
+    if (deadline !== null) clearTimeout(deadline);
     try { isolate.dispose(); } catch { /* already disposed */ }
   }
 }

@@ -51,20 +51,28 @@ for (const task of tasks) {
   const reasons: string[] = [];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `saber-eval-${task.id}-`));
   try {
-    // every task runs in a copy — never in the source fixture/workspace dir
+    // every task runs in a copy — never in the source fixture/workspace dir.
+    // EXPLICIT workspaces keep everything (data files, .git, dotfiles);
+    // the sibling-fixture default excludes only the task definition itself.
+    const taskFileBase = path.basename(taskFile);
+    const defaultFixtureDir = path.dirname(path.resolve(taskFile));
     const copyRecursive = (from: string, to: string): void => {
       fs.mkdirSync(to, { recursive: true });
       for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
-        if (entry.name.endsWith(".jsonl") || entry.name.startsWith(".")) continue;
+        if (!task.workspace && (entry.name === taskFileBase || entry.name.endsWith(".jsonl"))) continue;
         const srcPath = path.join(from, entry.name);
         const dstPath = path.join(to, entry.name);
         if (entry.isDirectory()) copyRecursive(srcPath, dstPath);
-        else fs.copyFileSync(srcPath, dstPath);
+        else if (entry.isSymbolicLink()) {
+          // resolve the link and copy the TARGET's kind — a dir symlink fed
+          // to copyFileSync aborts the whole batch
+          const real = fs.realpathSync(srcPath);
+          if (fs.statSync(real).isDirectory()) copyRecursive(real, dstPath);
+          else fs.copyFileSync(real, dstPath);
+        } else fs.copyFileSync(srcPath, dstPath);
       }
     };
-    const source = task.workspace
-      ?? path.dirname(path.resolve(taskFile)); // fixtures live next to the tasks file
-    copyRecursive(source, dir);
+    copyRecursive(task.workspace ?? defaultFixtureDir, dir);
   } catch (e) {
     console.error(`fixture copy failed for ${task.id}: ${e instanceof Error ? e.message : String(e)}`);
     results.push({ id: task.id, pass: false, answer: "", exitCode: null, reasons: ["fixture-copy-failed"], durationMs: Date.now() - started });

@@ -157,9 +157,17 @@ export function makeToolBridge(tools: ToolDefinition[], ctx: ToolContext): {
   };
 
   /** Resolves when every dispatched sub-call has settled, or after `capMs`
-   *  (non-cooperative tools must not hold the turn hostage). */
+   *  (non-cooperative tools must not hold the turn hostage). The losing
+   *  timer branch is cleared so it cannot delay process exit. */
   const drain = (capMs: number): Promise<void> =>
-    Promise.race([queue.then(() => undefined, () => undefined), new Promise<void>((r) => setTimeout(r, capMs))]);
+    new Promise<void>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => { timer = null; resolve(); }, capMs);
+      if (timer && timer.unref) timer.unref();
+      queue.then(
+        () => { if (timer !== null) clearTimeout(timer); resolve(); },
+        () => { if (timer !== null) clearTimeout(timer); resolve(); },
+      );
+    });
 
   return { dispatch, drain };
 }

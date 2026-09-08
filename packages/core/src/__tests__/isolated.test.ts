@@ -134,3 +134,23 @@ isolated("isolate review fixes", () => {
     expect(calls[0].callId).not.toBe(calls[1].callId);
   });
 });
+
+isolated("fix-round regressions", () => {
+  it("an idle host process still receives the timeout terminal state", async () => {
+    // regression: AbortSignal.timeout held no event-loop handle, so a bare
+    // process could exit before the deadline fired — this test runs in such
+    // a bare process (no other handles); reaching the assertion at all is
+    // the proof
+    const started = Date.now();
+    const result = await run(`await new Promise(() => {})`, 1000);
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/timed out/);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900);
+  }, 10_000);
+
+  it("object returns still render after the deadline rework", async () => {
+    const result = await run(`return { ok: true };`);
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain('"ok": true');
+  });
+});
